@@ -57,77 +57,77 @@ jobs:
       # 2) Confirm Cloudflare Pages project and domain(s) are configured via
       #    GitHub Script calls to the Cloudflare API. If this fails, we skip build.
       ############################################################################
-      - name: Configure Cloudflare Pages (API checks)
-        uses: actions/github-script@v6
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
-          CLOUDFLARE_DOMAIN_NAME: ${{ vars.CLOUDFLARE_DOMAIN_NAME }}
-        with:
-          script: |
-            const cfApiToken    = process.env.CLOUDFLARE_API_TOKEN;
-            const cfAccountId   = process.env.CLOUDFLARE_ACCOUNT_ID;
-            const cfServiceName = process.env.CLOUDFLARE_SERVICE_NAME;
-            const cfDomainName  = process.env.CLOUDFLARE_DOMAIN_NAME;
+      # - name: Configure Cloudflare Pages (API checks)
+      #   uses: actions/github-script@v6
+      #   env:
+      #     CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      #     CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      #     CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
+      #     CLOUDFLARE_DOMAIN_NAME: ${{ vars.CLOUDFLARE_DOMAIN_NAME }}
+      #   with:
+      #     script: |
+      #       const cfApiToken    = process.env.CLOUDFLARE_API_TOKEN;
+      #       const cfAccountId   = process.env.CLOUDFLARE_ACCOUNT_ID;
+      #       const cfServiceName = process.env.CLOUDFLARE_SERVICE_NAME;
+      #       const cfDomainName  = process.env.CLOUDFLARE_DOMAIN_NAME;
 
-            if (!cfApiToken || !cfAccountId || !cfServiceName || !cfDomainName) {
-              throw new Error("Missing CLOUDFLARE_* environment variables/secrets.");
-            }
+      #       if (!cfApiToken || !cfAccountId || !cfServiceName || !cfDomainName) {
+      #         throw new Error("Missing CLOUDFLARE_* environment variables/secrets.");
+      #       }
 
-            async function cfApiRequest(path, method = "GET", body = null) {
-              const url = `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}${path}`;
-              const headers = {
-                "Authorization": `Bearer ${cfApiToken}`,
-                "Content-Type": "application/json"
-              };
-              const opts = { method, headers };
-              if (body) {
-                opts.body = JSON.stringify(body);
-              }
-              const response = await fetch(url, opts);
-              if (!response.ok) {
-                const text = await response.text();
-                throw new Error(`Cloudflare API error [${response.status}]: ${text}`);
-              }
-              return response.json();
-            }
+      #       async function cfApiRequest(path, method = "GET", body = null) {
+      #         const url = `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}${path}`;
+      #         const headers = {
+      #           "Authorization": `Bearer ${cfApiToken}`,
+      #           "Content-Type": "application/json"
+      #         };
+      #         const opts = { method, headers };
+      #         if (body) {
+      #           opts.body = JSON.stringify(body);
+      #         }
+      #         const response = await fetch(url, opts);
+      #         if (!response.ok) {
+      #           const text = await response.text();
+      #           throw new Error(`Cloudflare API error [${response.status}]: ${text}`);
+      #         }
+      #         return response.json();
+      #       }
 
-            // 1) Ensure Pages Project
-            async function ensurePagesProject() {
-              const result = await cfApiRequest("/pages/projects");
-              const existing = result?.result || [];
-              const found = existing.some(prj => prj.name === cfServiceName);
-              if (!found) {
-                console.log(`Project '${cfServiceName}' not found. Creating...`);
-                await cfApiRequest("/pages/projects", "POST", { name: cfServiceName, production_branch: "main" });
-                console.log(`Created Pages project '${cfServiceName}'.`);
-              } else {
-                console.log(`Project '${cfServiceName}' already exists.`);
-              }
-            }
+      #       // 1) Ensure Pages Project
+      #       async function ensurePagesProject() {
+      #         const result = await cfApiRequest("/pages/projects");
+      #         const existing = result?.result || [];
+      #         const found = existing.some(prj => prj.name === cfServiceName);
+      #         if (!found) {
+      #           console.log(`Project '${cfServiceName}' not found. Creating...`);
+      #           await cfApiRequest("/pages/projects", "POST", { name: cfServiceName, production_branch: "main" });
+      #           console.log(`Created Pages project '${cfServiceName}'.`);
+      #         } else {
+      #           console.log(`Project '${cfServiceName}' already exists.`);
+      #         }
+      #       }
 
-            // 2) Ensure domain is attached
-            async function ensureDomain(domain) {
-              console.log(`Ensuring domain '${domain}' is attached...`);
-              const path = `/pages/projects/${cfServiceName}/domains`;
-              const list = await cfApiRequest(path, "GET");
-              const attached = list?.result || [];
-              const isFound = attached.some(d => d.domain === domain);
-              if (!isFound) {
-                console.log(`Domain '${domain}' not found. Attaching...`);
-                await cfApiRequest(path, "POST", { domain });
-                console.log(`Domain '${domain}' attached.`);
-              } else {
-                console.log(`Domain '${domain}' is already attached.`);
-              }
-            }
+      #       // 2) Ensure domain is attached
+      #       async function ensureDomain(domain) {
+      #         console.log(`Ensuring domain '${domain}' is attached...`);
+      #         const path = `/pages/projects/${cfServiceName}/domains`;
+      #         const list = await cfApiRequest(path, "GET");
+      #         const attached = list?.result || [];
+      #         const isFound = attached.some(d => d.domain === domain);
+      #         if (!isFound) {
+      #           console.log(`Domain '${domain}' not found. Attaching...`);
+      #           await cfApiRequest(path, "POST", { domain });
+      #           console.log(`Domain '${domain}' attached.`);
+      #         } else {
+      #           console.log(`Domain '${domain}' is already attached.`);
+      #         }
+      #       }
 
-            // Execute checks
-            await ensurePagesProject();
-            await ensureDomain(cfDomainName);
-            await ensureDomain(`*.${cfDomainName}`);
-            console.log("Cloudflare Pages config verification complete.");
+      #       // Execute checks
+      #       await ensurePagesProject();
+      #       await ensureDomain(cfDomainName);
+      #       await ensureDomain(`*.${cfDomainName}`);
+      #       console.log("Cloudflare Pages config verification complete.");
 
       ############################################################################
       # 3) Install dependencies, then build the frontend (only if CF project config
