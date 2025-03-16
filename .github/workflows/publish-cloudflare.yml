@@ -28,11 +28,11 @@ jobs:
         with:
           # If triggered by workflow_dispatch with a custom ref,
           # one can specify it in the dispatch form.
-          # Otherwise, defaults to the branch or tag that triggered the workflow.
+          # Otherwise, it defaults to the branch or tag that triggered the workflow.
           ref: ${{ github.ref }}
 
-      # Wrangler is provided by cloudflare/wrangler-action@v3, but we do need 'jq'
-      # if we want to parse JSON data in shell commands below.
+      # Wrangler is provided by cloudflare/wrangler-action@v3, but we need 'jq'
+      # to parse JSON in the shell commands below.
       - name: Install jq
         run: |
           sudo apt-get update
@@ -45,8 +45,7 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           preCommands: |
             echo "Checking if Pages service '${{ vars.CLOUDFLARE_SERVICE_NAME }}' exists"
-            if ! wrangler pages project list --json \
-              | jq -e ".[] | select(.name == \"${{ vars.CLOUDFLARE_SERVICE_NAME }}\")" > /dev/null; then
+            if ! wrangler pages project list --json | jq -e ".[] | select(.name == \"${{ vars.CLOUDFLARE_SERVICE_NAME }}\")" >/dev/null; then
               echo "Service ${{ vars.CLOUDFLARE_SERVICE_NAME }} not found - creating..."
               wrangler pages project create --project-name="${{ vars.CLOUDFLARE_SERVICE_NAME }}"
             else
@@ -54,10 +53,12 @@ jobs:
             fi
 
             echo "Ensuring domain '${{ vars.CLOUDFLARE_DOMAIN_NAME }}' is attached"
-            domainExists=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
+            domainExists=$(
+              curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
               | jq -r '.result[]?.domain' \
-              | grep -xc "${{ vars.CLOUDFLARE_DOMAIN_NAME }}" || true)
+              | grep -xc "${{ vars.CLOUDFLARE_DOMAIN_NAME }}" || true
+            )
 
             if [ "$domainExists" -eq 0 ]; then
               echo "Domain ${{ vars.CLOUDFLARE_DOMAIN_NAME }} not found. Adding..."
@@ -71,10 +72,12 @@ jobs:
             fi
 
             echo "Ensuring wildcard domain '*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}' is attached"
-            wildcardExists=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
+            wildcardExists=$(
+              curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
               | jq -r '.result[]?.domain' \
-              | grep -xc "*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}" || true)
+              | grep -xc "*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}" || true
+            )
 
             if [ "$wildcardExists" -eq 0 ]; then
               echo "Wildcard domain '*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}' not found. Adding..."
