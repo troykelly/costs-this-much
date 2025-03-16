@@ -1,22 +1,21 @@
 name: "Cloudflare Pages Publish"
 
 ################################################################################
+# This workflow demonstrates a refactored approach, ensuring:
+#   1. All Cloudflare configuration (Pages project and domain attachments) happen
+#      before any build steps, so you do not spend time building if CF config fails.
+#   2. GitHub Script is used for all Cloudflare API interactions—no inline shell scripts
+#      or jq usage. Wrangler is only used to deploy.
+#   3. Yarn usage follows the devcontainer approach to ensure the "current" Yarn
+#      version is respected. No sudo or apt operations are required.
+#   4. We do not hard-code Cloudflare project/domain values. Instead,
+#      we read them from GitHub Action Variables (vars.*) and Secrets (CLOUDFLARE_*).
+#
 # This workflow supports two publishing modes:
-#
-# 1) Manual trigger (workflow_dispatch) from any branch or tag.
-#    - Publishes from the specified ref (branch or tag).
-#
-# 2) Automatic trigger on push to:
-#    - The "publish" branch
-#    - Any tag matching "v*"
-#
-# It uses GitHub Actions Variables (vars.*) for the Cloudflare service/project
-# name and domain name (configured in your repository settings),
-# and GitHub Secrets for Cloudflare tokens.
-#
-# All Cloudflare API interactions are performed using the GitHub Script Action,
-# so we avoid complex shell scripting. Wrangler (through cloudflare/wrangler-action)
-# is used only to deploy the built files to Cloudflare Pages.
+#   - Manual trigger (workflow_dispatch) from any branch or tag.
+#   - Automatic trigger on push:
+#       • to branch "publish"
+#       • or any tag matching "v*"
 ################################################################################
 
 on:
@@ -33,36 +32,32 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      ########################################################################
-      # 1) Check out this repository
-      ########################################################################
+      ############################################################################
+      # 1) Check out the repository and ensure Node + Yarn environment is ready
+      ############################################################################
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Set up Node (if needed)
+        uses: actions/setup-node@v4
         with:
-          # If triggered by workflow_dispatch with a custom ref,
-          # one can specify that in the dispatch form. Otherwise it
-          # defaults to the commit/branch/ref that triggered the workflow.
-          ref: ${{ github.ref }}
+          node-version: "22"
+          check-latest: true
 
-      ########################################################################
-      # 2) Install dependencies (yarn, etc.) to build the frontend.
-      ########################################################################
-      - name: Install dependencies
-        run: yarn install --immutable
+      - name: Prepare Yarn environment
+        run: |
+          corepack enable
+          yarn set version stable
+          # Any additional Yarn config if required:
+          #   yarn config set nodeLinker node-modules
+          #   yarn config set enableGlobalCache true
+          #   yarn config set enableImmutableInstalls true
 
-      ########################################################################
-      # 3) Build the frontend.
-      ########################################################################
-      - name: Build frontend
-        run: yarn workspace frontend build
-
-      ########################################################################
-      # 4) Use GitHub Script for Cloudflare API calls to:
-      #    - Ensure the Pages project (vars.CLOUDFLARE_SERVICE_NAME) exists
-      #    - Ensure the domain (vars.CLOUDFLARE_DOMAIN_NAME) is attached
-      #    - Ensure the wildcard domain (*.<vars.CLOUDFLARE_DOMAIN_NAME>) is attached
-      ########################################################################
-      - name: Configure Cloudflare Pages project & domains
+      ############################################################################
+      # 2) Confirm Cloudflare Pages project and domain(s) are configured via
+      #    GitHub Script calls to the Cloudflare API. If this fails, we skip build.
+      ############################################################################
+      - name: Configure Cloudflare Pages (API checks)
         uses: actions/github-script@v6
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -71,96 +66,82 @@ jobs:
           CLOUDFLARE_DOMAIN_NAME: ${{ vars.CLOUDFLARE_DOMAIN_NAME }}
         with:
           script: |
-            const CF_API_TOKEN      = process.env.CLOUDFLARE_API_TOKEN;
-            const CF_ACCOUNT_ID     = process.env.CLOUDFLARE_ACCOUNT_ID;
-            const CF_SERVICE_NAME   = process.env.CLOUDFLARE_SERVICE_NAME;
-            const CF_DOMAIN_NAME    = process.env.CLOUDFLARE_DOMAIN_NAME;
+            const cfApiToken    = process.env.CLOUDFLARE_API_TOKEN;
+            const cfAccountId   = process.env.CLOUDFLARE_ACCOUNT_ID;
+            const cfServiceName = process.env.CLOUDFLARE_SERVICE_NAME;
+            const cfDomainName  = process.env.CLOUDFLARE_DOMAIN_NAME;
 
-            if (!CF_API_TOKEN || !CF_ACCOUNT_ID || !CF_SERVICE_NAME || !CF_DOMAIN_NAME) {
-              throw new Error("Missing Cloudflare environment variables. Ensure 'vars' and 'secrets' are set.");
+            if (!cfApiToken || !cfAccountId || !cfServiceName || !cfDomainName) {
+              throw new Error("Missing CLOUDFLARE_* environment variables/secrets.");
             }
 
-            /**
-             * Helper: Make a Cloudflare API request.
-             * @param {string} subPath - appended to /accounts/<id>.
-             * @param {string} method - GET, POST, PATCH, DELETE, etc.
-             * @param {object|null} body - JSON body for POST/PUT, if needed.
-             * @returns {Promise<any>} The parsed JSON response.
-             */
-            async function cfApiRequest(subPath, method = "GET", body = null) {
-              const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}${subPath}`;
+            async function cfApiRequest(path, method = "GET", body = null) {
+              const url = `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}${path}`;
               const headers = {
-                "Authorization": `Bearer ${CF_API_TOKEN}`,
-                "Content-Type": "application/json",
+                "Authorization": `Bearer ${cfApiToken}`,
+                "Content-Type": "application/json"
               };
               const opts = { method, headers };
-
               if (body) {
                 opts.body = JSON.stringify(body);
               }
-
-              const resp = await fetch(url, opts);
-              if (!resp.ok) {
-                const msg = await resp.text();
-                throw new Error(`Cloudflare API request failed with status ${resp.status}: ${msg}`);
+              const response = await fetch(url, opts);
+              if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Cloudflare API error [${response.status}]: ${text}`);
               }
-              return resp.json();
+              return response.json();
             }
-
-            /**
-             * Ensures a Pages project with name CF_SERVICE_NAME exists,
-             * creating it if needed.
-             */
-            async function ensurePagesProject() {
-              const data = await cfApiRequest("/pages/projects");
-              const existingProjects = data.result || [];
-              const found = existingProjects.some(prj => prj.name === CF_SERVICE_NAME);
-
-              if (!found) {
-                console.log(`Pages project "${CF_SERVICE_NAME}" not found. Creating...`);
-                await cfApiRequest("/pages/projects", "POST", { name: CF_SERVICE_NAME });
-                console.log(`Created Pages project "${CF_SERVICE_NAME}" successfully.`);
-              } else {
-                console.log(`Pages project "${CF_SERVICE_NAME}" already exists.`);
-              }
-            }
-
-            /**
-             * Ensures a specific domain is attached to the Pages project.
-             * @param {string} domain - The domain to check or attach (e.g., "example.com").
-             */
-            async function ensureDomain(domain) {
-              const path = `/pages/projects/${CF_SERVICE_NAME}/domains`;
-              const data = await cfApiRequest(path, "GET");
-              const attachedDomains = data.result || [];
-              const alreadyAttached = attachedDomains.some(d => d.domain === domain);
-
-              if (!alreadyAttached) {
-                console.log(`Domain "${domain}" not attached. Adding...`);
-                await cfApiRequest(path, "POST", { domain });
-                console.log(`Attached domain "${domain}".`);
-              } else {
-                console.log(`Domain "${domain}" is already attached.`);
-              }
-            }
-
-            // Main logic:
-            console.log(`Ensuring Pages project and domains for "${CF_SERVICE_NAME}"...`);
 
             // 1) Ensure Pages Project
+            async function ensurePagesProject() {
+              const result = await cfApiRequest("/pages/projects");
+              const existing = result?.result || [];
+              const found = existing.some(prj => prj.name === cfServiceName);
+              if (!found) {
+                console.log(`Project '${cfServiceName}' not found. Creating...`);
+                await cfApiRequest("/pages/projects", "POST", { name: cfServiceName });
+                console.log(`Created Pages project '${cfServiceName}'.`);
+              } else {
+                console.log(`Project '${cfServiceName}' already exists.`);
+              }
+            }
+
+            // 2) Ensure domain is attached
+            async function ensureDomain(domain) {
+              console.log(`Ensuring domain '${domain}' is attached...`);
+              const path = `/pages/projects/${cfServiceName}/domains`;
+              const list = await cfApiRequest(path, "GET");
+              const attached = list?.result || [];
+              const isFound = attached.some(d => d.domain === domain);
+              if (!isFound) {
+                console.log(`Domain '${domain}' not found. Attaching...`);
+                await cfApiRequest(path, "POST", { domain });
+                console.log(`Domain '${domain}' attached.`);
+              } else {
+                console.log(`Domain '${domain}' is already attached.`);
+              }
+            }
+
+            // Execute checks
             await ensurePagesProject();
+            await ensureDomain(cfDomainName);
+            await ensureDomain(`*.${cfDomainName}`);
+            console.log("Cloudflare Pages config verification complete.");
 
-            // 2) Ensure main domain
-            await ensureDomain(CF_DOMAIN_NAME);
+      ############################################################################
+      # 3) Install dependencies, then build the frontend (only if CF project config
+      #    succeeded above). If the above fails, we won't continue.
+      ############################################################################
+      - name: Install project dependencies
+        run: yarn install --immutable
 
-            // 3) Ensure wildcard domain
-            await ensureDomain(`*.${CF_DOMAIN_NAME}`);
+      - name: Build frontend
+        run: yarn workspace frontend build
 
-            console.log("Cloudflare Pages configuration complete.");
-
-      ########################################################################
-      # 5) Deploy to Cloudflare Pages using Wrangler
-      ########################################################################
+      ############################################################################
+      # 4) Deploy to Cloudflare Pages using Wrangler
+      ############################################################################
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
