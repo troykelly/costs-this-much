@@ -1,16 +1,40 @@
 name: "Cloudflare Pages Publish"
 
+###############################################################################
+# This workflow supports two publishing modes:
+# 1) Manual trigger from any branch (workflow_dispatch).
+#    - Publishes from the branch/tag specified in the dispatch.
+# 2) Automatic trigger on push to the "publish" branch or when pushing a tag matching "v*".
+#    - Publishes from that branch or tag.
+###############################################################################
+
 on:
+  workflow_dispatch:
   push:
     branches:
-      - main
-  workflow_dispatch:
+      - 'publish'
+    tags:
+      - 'v*'
 
 jobs:
   publish:
+    name: "Publish to Cloudflare Pages"
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # If triggered by workflow_dispatch with a custom ref, override it here if needed.
+          # Otherwise, will default to the branch or tag that triggered the workflow.
+          ref: ${{ github.ref }}
+
+      # Wrangler is already provided by the wrangler-action, but we do need 'jq' if we
+      # plan to parse JSON for domain checks below.
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
 
       - name: Check or create Cloudflare Pages service
         uses: cloudflare/wrangler-action@v3
@@ -18,9 +42,8 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           preCommands: |
-            # Check if the project (service) exists
             echo "Checking if Pages service '${{ vars.CLOUDFLARE_SERVICE_NAME }}' exists"
-            if ! wrangler pages project list --json | jq -e ".[] | select(.name == \"${{ vars.CLOUDFLARE_SERVICE_NAME }}\")" > /dev/null; then
+            if ! wrangler pages project list --json | jq -e '.[] | select(.name == "'${{ vars.CLOUDFLARE_SERVICE_NAME }}'")' > /dev/null; then
               echo "Service ${{ vars.CLOUDFLARE_SERVICE_NAME }} not found - creating..."
               wrangler pages project create --project-name="${{ vars.CLOUDFLARE_SERVICE_NAME }}"
             else
@@ -56,12 +79,8 @@ jobs:
               echo "Wildcard domain '*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}' is already configured."
             fi
           command: echo "Finished checking/creating service and domain setup."
-          # Provide environment variables to the action
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      - name: Install dependencies
+      - name: Install project dependencies
         run: yarn install --immutable
 
       - name: Build frontend
