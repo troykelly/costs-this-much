@@ -1,0 +1,75 @@
+name: "Cloudflare Pages Publish"
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check or create Cloudflare Pages service
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          preCommands: |
+            # Check if the project (service) exists
+            echo "Checking if Pages service '${{ vars.CLOUDFLARE_SERVICE_NAME }}' exists"
+            if ! wrangler pages project list --json | jq -e ".[] | select(.name == \"${{ vars.CLOUDFLARE_SERVICE_NAME }}\")" > /dev/null; then
+              echo "Service ${{ vars.CLOUDFLARE_SERVICE_NAME }} not found - creating..."
+              wrangler pages project create --project-name="${{ vars.CLOUDFLARE_SERVICE_NAME }}"
+            else
+              echo "Service ${{ vars.CLOUDFLARE_SERVICE_NAME }} already exists"
+            fi
+
+            # Check or create custom domain entries (including wildcard)
+            echo "Ensuring domain '${{ vars.CLOUDFLARE_DOMAIN_NAME }}' is attached"
+            domainExists=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
+              | jq -r '.result[]?.domain' | grep -xc "${{ vars.CLOUDFLARE_DOMAIN_NAME }}" || true)
+            if [ "$domainExists" -eq 0 ]; then
+              echo "Domain ${{ vars.CLOUDFLARE_DOMAIN_NAME }} not found. Adding..."
+              curl -X POST -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                   -H "Content-Type: application/json" \
+                   "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
+                   --data "{\"domain\": \"${{ vars.CLOUDFLARE_DOMAIN_NAME }}\"}"
+            else
+              echo "Domain ${{ vars.CLOUDFLARE_DOMAIN_NAME }} is already configured."
+            fi
+
+            echo "Ensuring wildcard domain '*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}' is attached"
+            wildcardExists=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
+              | jq -r '.result[]?.domain' | grep -xc "*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}" || true)
+            if [ "$wildcardExists" -eq 0 ]; then
+              echo "Wildcard domain '*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}' not found. Adding..."
+              curl -X POST -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                   -H "Content-Type: application/json" \
+                   "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
+                   --data "{\"domain\": \"*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}\"}"
+            else
+              echo "Wildcard domain '*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}' is already configured."
+            fi
+          command: echo "Finished checking/creating service and domain setup."
+          # Provide environment variables to the action
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build frontend
+        run: yarn workspace frontend build
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy ./frontend/dist --project-name=${{ vars.CLOUDFLARE_SERVICE_NAME }}

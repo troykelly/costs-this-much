@@ -1,0 +1,9 @@
+{
+  "packageManager": "yarn@4.7.0",
+  "scripts": {
+    "upgrade": "yarn upgrade-interactive"
+  },
+  "workspaces": [
+    "frontend"
+  ]
+}

@@ -1,0 +1,83 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/typescript-node
+{
+	"name": "Node.js & TypeScript",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"image": "mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm",
+	"features": {
+		"ghcr.io/devcontainers/features/common-utils:2": {
+			"installZsh": true,
+			"configureZshAsDefaultShell": true,
+			"installOhMyZsh": true,
+			"installOhMyZshConfig": true,
+			"upgradePackages": true,
+			"nonFreePackages": true,
+			"username": "vscode",
+			"userUid": "automatic",
+			"userGid": "automatic"
+		},
+		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+			"moby": true,
+			"installDockerBuildx": true,
+			"installDockerComposeSwitch": true,
+			"version": "latest",
+			"dockerDashComposeVersion": "v2"
+		},
+		"ghcr.io/eitsupi/devcontainer-features/jq-likes:2": {
+			"allowJqRcVersion": true,
+			"jqVersion": "latest",
+			"yqVersion": "latest",
+			"gojqVersion": "latest",
+			"xqVersion": "latest",
+			"jaqVersion": "latest"
+		},
+		"ghcr.io/stuartleeks/dev-container-features/shell-history:0": {},
+		"ghcr.io/devcontainers-extra/features/cloudflare-wrangler:1": {
+			"version": "latest"
+		},
+		"ghcr.io/devcontainers/features/python:1": {
+			"version": "3",
+			"installTools": true,
+			"optimize": true,
+			"installJupyterlab": false
+		}
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-vscode.vscode-typescript-next",
+				"yzhang.markdown-all-in-one",
+				"GitHub.codespaces",
+				"GitHub.remotehub",
+				"github.vscode-github-actions",
+				"GitHub.copilot",
+				"GitHub.vscode-pull-request-github",
+				"GitHub.github-vscode-theme",
+				"GitHub.copilot-chat",
+				"ms-azuretools.vscode-docker",
+				"ms-vscode-remote.remote-containers",
+				"ZainChen.json",
+				"redhat.vscode-yaml",
+				"alexcvzz.vscode-sqlite",
+				"Postman.postman-for-vscode",
+				"esbenp.prettier-vscode"
+			]
+		}
+	},
+	"initializeCommand": "touch ${localWorkspaceFolder}/.env",
+	"runArgs": [
+		"--env-file",
+		"${localWorkspaceFolder}/.env"
+	],
+	"postCreateCommand": "python3 -m pip install --upgrade pip; pip install --user openai; sudo corepack enable && yes | corepack prepare yarn@stable --activate && yarn set version stable; yarn config set nodeLinker node-modules && yarn config set enableGlobalCache true && yarn config set enableImmutableInstalls true && yarn config set --json npmScopes '{\"troykelly\": {\"npmRegistryServer\": \"https://npm.pkg.github.com\", \"npmAlwaysAuth\": true}}' && yarn config set --json npmRegistries \"{\\\"//registry.npmjs.org\\\": {\\\"npmAuthToken\\\": \\\"${NPM_AUTH_TOKEN}\\\"}, \\\"//npm.pkg.github.com\\\": {\\\"npmAuthToken\\\": \\\"${GITHUB_TOKEN}\\\"}}\" && yarn config set --json packageExtensions \"{\\\"@sentry/node@*\\\":{\\\"peerDependencies\\\":{\\\"@prisma/instrumentation\\\":\\\"*\\\"}},\\\"@sentry/opentelemetry@*\\\":{\\\"peerDependencies\\\":{\\\"require-in-the-middle\\\":\\\"*\\\"}}}\" && yarn install --immutable || (yarn install --mode=update-lockfile && yarn install --immutable)"
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	// "features": {},
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+	// Use 'postCreateCommand' to run commands after the container is created.
+	// "postCreateCommand": "yarn install",
+	// Configure tool-specific properties.
+	// "customizations": {},
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}
