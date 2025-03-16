@@ -1,5 +1,6 @@
 # App
 .env
+frontend/dist
 
 # TypeScript
 node_modules/
