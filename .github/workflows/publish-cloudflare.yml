@@ -17,6 +17,9 @@ name: "Cloudflare Pages Publish"
 # All Cloudflare API interactions are performed using the GitHub Script Action,
 # so we avoid complex shell scripting. Wrangler (through cloudflare/wrangler-action)
 # is used only to deploy the built files to Cloudflare Pages.
+#
+# This file has been updated to align with the devcontainer approach to Yarn,
+# ensuring the "current version" is correctly set before installing dependencies.
 ################################################################################
 
 on:
@@ -33,9 +36,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      ########################################################################
+      ############################################################################
       # 1) Check out this repository
-      ########################################################################
+      ############################################################################
       - name: Check out repository
         uses: actions/checkout@v4
         with:
@@ -44,24 +47,34 @@ jobs:
           # defaults to the commit/branch/ref that triggered the workflow.
           ref: ${{ github.ref }}
 
-      ########################################################################
-      # 2) Install dependencies (yarn, etc.) to build the frontend.
-      ########################################################################
-      - name: Install dependencies
-        run: yarn install --immutable
+      ############################################################################
+      # 2) Prepare Yarn environment & install dependencies
+      #
+      #    We replicate the approach used in the devcontainer so that
+      #    Yarn is the correct "current" version, ensuring "yarn install" works.
+      ############################################################################
+      - name: Prepare Yarn & install dependencies
+        run: |
+          corepack enable
+          yarn set version stable
+          # The following or similar settings may be used if you require them:
+          yarn config set nodeLinker node-modules
+          yarn config set enableGlobalCache true
+          yarn config set enableImmutableInstalls true
+          yarn install --immutable
 
-      ########################################################################
-      # 3) Build the frontend.
-      ########################################################################
+      ############################################################################
+      # 3) Build the frontend
+      ############################################################################
       - name: Build frontend
         run: yarn workspace frontend build
 
-      ########################################################################
+      ############################################################################
       # 4) Use GitHub Script for Cloudflare API calls to:
       #    - Ensure the Pages project (vars.CLOUDFLARE_SERVICE_NAME) exists
       #    - Ensure the domain (vars.CLOUDFLARE_DOMAIN_NAME) is attached
       #    - Ensure the wildcard domain (*.<vars.CLOUDFLARE_DOMAIN_NAME>) is attached
-      ########################################################################
+      ############################################################################
       - name: Configure Cloudflare Pages project & domains
         uses: actions/github-script@v6
         env:
@@ -158,9 +171,9 @@ jobs:
 
             console.log("Cloudflare Pages configuration complete.");
 
-      ########################################################################
+      ############################################################################
       # 5) Deploy to Cloudflare Pages using Wrangler
-      ########################################################################
+      ############################################################################
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
