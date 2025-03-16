@@ -2,19 +2,20 @@ name: "Cloudflare Pages Publish"
 
 ###############################################################################
 # This workflow supports two publishing modes:
-# 1) Manual trigger from any branch (workflow_dispatch).
-#    - Publishes from the branch/tag specified in the dispatch.
-# 2) Automatic trigger on push to the "publish" branch or when pushing a tag matching "v*".
-#    - Publishes from that branch or tag.
+# 1) Manual trigger (workflow_dispatch) from any branch or tag.
+#    - Publishes from the specified ref (branch or tag).
+# 2) Automatic trigger on push to:
+#    - The "publish" branch
+#    - Any tag matching "v*"
 ###############################################################################
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - 'publish'
+      - "publish"
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
   publish:
@@ -25,12 +26,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          # If triggered by workflow_dispatch with a custom ref, override it here if needed.
-          # Otherwise, will default to the branch or tag that triggered the workflow.
+          # If triggered by workflow_dispatch with a custom ref,
+          # one can specify it in the dispatch form.
+          # Otherwise, defaults to the branch or tag that triggered the workflow.
           ref: ${{ github.ref }}
 
-      # Wrangler is already provided by the wrangler-action, but we do need 'jq' if we
-      # plan to parse JSON for domain checks below.
+      # Wrangler is provided by cloudflare/wrangler-action@v3, but we do need 'jq'
+      # if we want to parse JSON data in shell commands below.
       - name: Install jq
         run: |
           sudo apt-get update
@@ -43,24 +45,27 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           preCommands: |
             echo "Checking if Pages service '${{ vars.CLOUDFLARE_SERVICE_NAME }}' exists"
-            if ! wrangler pages project list --json | jq -e '.[] | select(.name == "'${{ vars.CLOUDFLARE_SERVICE_NAME }}'")' > /dev/null; then
+            if ! wrangler pages project list --json \
+              | jq -e ".[] | select(.name == \"${{ vars.CLOUDFLARE_SERVICE_NAME }}\")" > /dev/null; then
               echo "Service ${{ vars.CLOUDFLARE_SERVICE_NAME }} not found - creating..."
               wrangler pages project create --project-name="${{ vars.CLOUDFLARE_SERVICE_NAME }}"
             else
               echo "Service ${{ vars.CLOUDFLARE_SERVICE_NAME }} already exists"
             fi
 
-            # Check or create custom domain entries (including wildcard)
             echo "Ensuring domain '${{ vars.CLOUDFLARE_DOMAIN_NAME }}' is attached"
             domainExists=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
               "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
-              | jq -r '.result[]?.domain' | grep -xc "${{ vars.CLOUDFLARE_DOMAIN_NAME }}" || true)
+              | jq -r '.result[]?.domain' \
+              | grep -xc "${{ vars.CLOUDFLARE_DOMAIN_NAME }}" || true)
+
             if [ "$domainExists" -eq 0 ]; then
               echo "Domain ${{ vars.CLOUDFLARE_DOMAIN_NAME }} not found. Adding..."
-              curl -X POST -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              curl -s -X POST \
+                   -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
                    -H "Content-Type: application/json" \
                    "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
-                   --data "{\"domain\": \"${{ vars.CLOUDFLARE_DOMAIN_NAME }}\"}"
+                   --data "{\"domain\":\"${{ vars.CLOUDFLARE_DOMAIN_NAME }}\"}"
             else
               echo "Domain ${{ vars.CLOUDFLARE_DOMAIN_NAME }} is already configured."
             fi
@@ -68,13 +73,16 @@ jobs:
             echo "Ensuring wildcard domain '*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}' is attached"
             wildcardExists=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
               "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
-              | jq -r '.result[]?.domain' | grep -xc "*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}" || true)
+              | jq -r '.result[]?.domain' \
+              | grep -xc "*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}" || true)
+
             if [ "$wildcardExists" -eq 0 ]; then
               echo "Wildcard domain '*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}' not found. Adding..."
-              curl -X POST -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              curl -s -X POST \
+                   -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
                    -H "Content-Type: application/json" \
                    "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
-                   --data "{\"domain\": \"*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}\"}"
+                   --data "{\"domain\":\"*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}\"}"
             else
               echo "Wildcard domain '*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}' is already configured."
             fi
