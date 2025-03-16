@@ -100,7 +100,7 @@ jobs:
               const found = existing.some(prj => prj.name === cfServiceName);
               if (!found) {
                 console.log(`Project '${cfServiceName}' not found. Creating...`);
-                await cfApiRequest("/pages/projects", "POST", { name: cfServiceName });
+                await cfApiRequest("/pages/projects", "POST", { name: cfServiceName, production_branch: "main" });
                 console.log(`Created Pages project '${cfServiceName}'.`);
               } else {
                 console.log(`Project '${cfServiceName}' already exists.`);
