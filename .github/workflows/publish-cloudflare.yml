@@ -48,10 +48,9 @@ jobs:
         run: |
           corepack enable
           yarn set version stable
-          # Any additional Yarn config if required:
-          #   yarn config set nodeLinker node-modules
-          #   yarn config set enableGlobalCache true
-          #   yarn config set enableImmutableInstalls true
+          yarn config set nodeLinker node-modules
+          yarn config set enableGlobalCache true
+          yarn config set enableImmutableInstalls true
 
       ############################################################################
       # 2) Confirm Cloudflare Pages project and domain(s) are configured via
