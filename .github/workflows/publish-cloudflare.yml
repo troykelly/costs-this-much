@@ -7,6 +7,11 @@ name: "Cloudflare Pages Publish"
 # 2) Automatic trigger on push to:
 #    - The "publish" branch
 #    - Any tag matching "v*"
+#
+# It uses GitHub Actions Variables (vars.*) for the Cloudflare service/project
+# name and domain name, and GitHub Secrets for tokens.
+# All Cloudflare API interactions are performed with the GitHub Script action.
+# Wrangler (provided by cloudflare/wrangler-action) is used only to deploy.
 ###############################################################################
 
 on:
@@ -23,80 +28,126 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      #########################################################################
+      # 1) Check out this repository
+      #########################################################################
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           # If triggered by workflow_dispatch with a custom ref,
           # one can specify it in the dispatch form.
-          # Otherwise, it defaults to the branch or tag that triggered the workflow.
           ref: ${{ github.ref }}
 
-      # Wrangler is provided by cloudflare/wrangler-action@v3, but we need 'jq'
-      # to parse JSON in the shell commands below.
-      - name: Install jq
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq
-
-      - name: Check or create Cloudflare Pages service
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          preCommands: |
-            echo "Checking if Pages service '${{ vars.CLOUDFLARE_SERVICE_NAME }}' exists"
-            if ! wrangler pages project list --json | jq -e ".[] | select(.name == \"${{ vars.CLOUDFLARE_SERVICE_NAME }}\")" >/dev/null; then
-              echo "Service ${{ vars.CLOUDFLARE_SERVICE_NAME }} not found - creating..."
-              wrangler pages project create --project-name="${{ vars.CLOUDFLARE_SERVICE_NAME }}"
-            else
-              echo "Service ${{ vars.CLOUDFLARE_SERVICE_NAME }} already exists"
-            fi
-
-            echo "Ensuring domain '${{ vars.CLOUDFLARE_DOMAIN_NAME }}' is attached"
-            domainExists=$(
-              curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-                "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
-              | jq -r '.result[]?.domain' \
-              | grep -xc "${{ vars.CLOUDFLARE_DOMAIN_NAME }}" || true
-            )
-
-            if [ "$domainExists" -eq 0 ]; then
-              echo "Domain ${{ vars.CLOUDFLARE_DOMAIN_NAME }} not found. Adding..."
-              curl -s -X POST \
-                   -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-                   -H "Content-Type: application/json" \
-                   "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
-                   --data "{\"domain\":\"${{ vars.CLOUDFLARE_DOMAIN_NAME }}\"}"
-            else
-              echo "Domain ${{ vars.CLOUDFLARE_DOMAIN_NAME }} is already configured."
-            fi
-
-            echo "Ensuring wildcard domain '*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}' is attached"
-            wildcardExists=$(
-              curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-                "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
-              | jq -r '.result[]?.domain' \
-              | grep -xc "*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}" || true
-            )
-
-            if [ "$wildcardExists" -eq 0 ]; then
-              echo "Wildcard domain '*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}' not found. Adding..."
-              curl -s -X POST \
-                   -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-                   -H "Content-Type: application/json" \
-                   "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/${{ vars.CLOUDFLARE_SERVICE_NAME }}/domains" \
-                   --data "{\"domain\":\"*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}\"}"
-            else
-              echo "Wildcard domain '*.${{ vars.CLOUDFLARE_DOMAIN_NAME }}' is already configured."
-            fi
-          command: echo "Finished checking/creating service and domain setup."
-
-      - name: Install project dependencies
+      #########################################################################
+      # 2) Install dependencies (yarn, etc.) for building the frontend
+      #########################################################################
+      - name: Install dependencies
         run: yarn install --immutable
 
+      #########################################################################
+      # 3) Build the frontend
+      #########################################################################
       - name: Build frontend
         run: yarn workspace frontend build
 
+      #########################################################################
+      # 4) Use GitHub Script for Cloudflare API calls to ensure:
+      #    - The Pages project "CLOUDFLARE_SERVICE_NAME" exists
+      #    - The domain "CLOUDFLARE_DOMAIN_NAME" is attached
+      #    - The wildcard domain "*.<CLOUDFLARE_DOMAIN_NAME>" is attached
+      # This avoids complicated shell scripts or inline "jq" usage.
+      #########################################################################
+      - name: Configure Cloudflare Pages (API checks)
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const CF_API_TOKEN      = process.env.CLOUDFLARE_API_TOKEN;
+            const CF_ACCOUNT_ID     = process.env.CLOUDFLARE_ACCOUNT_ID;
+            const CF_SERVICE_NAME   = process.env.CLOUDFLARE_SERVICE_NAME;
+            const CF_DOMAIN_NAME    = process.env.CLOUDFLARE_DOMAIN_NAME;
+
+            if (!CF_API_TOKEN || !CF_ACCOUNT_ID || !CF_SERVICE_NAME || !CF_DOMAIN_NAME) {
+              throw new Error("Missing required Cloudflare environment variables/secrets.");
+            }
+
+            /**
+             * Helper to call Cloudflare API using fetch (available in GitHub Script).
+             *
+             * @param {string} path  Endpoint path (without leading slash, appended to /accounts/:id).
+             * @param {string} method  HTTP method (GET,POST,PATCH,DELETE).
+             * @param {object|null} body  JSON body if needed, or null.
+             * @returns {Promise<object>} Parsed JSON response from Cloudflare.
+             */
+            async function cloudflareRequest(path, method = 'GET', body = null) {
+              const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}${path}`;
+              const headers = {
+                'Authorization': `Bearer ${CF_API_TOKEN}`,
+                'Content-Type': 'application/json'
+              };
+              const options = { method, headers };
+              if (body) {
+                options.body = JSON.stringify(body);
+              }
+
+              const resp = await fetch(url, options);
+              if (!resp.ok) {
+                const text = await resp.text();
+                throw new Error(`Cloudflare API request failed (${resp.status}): ${text}`);
+              }
+              return resp.json();
+            }
+
+            /**
+             * Ensure Cloudflare Pages project exists.
+             */
+            async function ensurePagesProject() {
+              // List existing projects
+              const projectsResult = await cloudflareRequest('/pages/projects', 'GET');
+              const projects = projectsResult.result || [];
+              const found = projects.some(p => p.name === CF_SERVICE_NAME);
+              if (!found) {
+                console.log(`Project '${CF_SERVICE_NAME}' not found. Creating...`);
+                await cloudflareRequest('/pages/projects', 'POST', {
+                  name: CF_SERVICE_NAME
+                });
+              } else {
+                console.log(`Project '${CF_SERVICE_NAME}' already exists.`);
+              }
+            }
+
+            /**
+             * Ensure a domain is attached to the Pages project.
+             * @param {string} domain The domain to check/attach (e.g., "example.com").
+             */
+            async function ensureDomain(domain) {
+              const path = `/pages/projects/${CF_SERVICE_NAME}/domains`;
+              const listResult = await cloudflareRequest(path, 'GET');
+              const existingDomains = listResult.result || [];
+              const found = existingDomains.some((d) => d.domain === domain);
+              if (!found) {
+                console.log(`Domain '${domain}' not found. Attaching...`);
+                await cloudflareRequest(path, 'POST', { domain });
+              } else {
+                console.log(`Domain '${domain}' is already attached.`);
+              }
+            }
+
+            // Run checks
+            await ensurePagesProject();
+            await ensureDomain(CF_DOMAIN_NAME);
+            await ensureDomain(`*.${CF_DOMAIN_NAME}`);
+
+            console.log("Finished ensuring Pages project and domain attachments.");
+
+          env:
+            CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+            CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+            CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
+            CLOUDFLARE_DOMAIN_NAME: ${{ vars.CLOUDFLARE_DOMAIN_NAME }}
+
+      #########################################################################
+      # 5) Deploy to Cloudflare Pages using wrangler-action
+      #########################################################################
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
