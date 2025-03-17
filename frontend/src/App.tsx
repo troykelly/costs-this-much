@@ -272,8 +272,7 @@ enum TouPeriod {
  * with a horizontal red reference line indicating the maximum cost.
  *
  * Now the chart plots the per five minute cost for the scenario currently selected.
- * It accepts an additional prop, "scenarioKey", which is used to calculate the
- * scenario's cost at each interval.
+ * The component also debugs the chart data to the console as well formed JSON.
  */
 interface SparklineChartProps {
   todayIntervals: AemoInterval[];
@@ -318,6 +317,21 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   );
   const maxCost = allCosts.length > 0 ? Math.max(...allCosts) : 0;
   const yRef = svgHeight - padding - ((maxCost / (maxCost || 1)) * (svgHeight - 2 * padding));
+
+  // Prepare chart data for debugging.
+  const chartData = {
+    today: todayIntervals.map(iv => ({
+      date: iv.SETTLEMENTDATE,
+      cost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
+    })),
+    yesterday: yesterdayIntervals.map(iv => ({
+      date: iv.SETTLEMENTDATE,
+      cost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
+    })),
+    todayPoints,
+    yesterdayPoints
+  };
+  console.log("SparklineChart data:", JSON.stringify(chartData, null, 2));
 
   return (
     <Box mt={2}>
