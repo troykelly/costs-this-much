@@ -275,26 +275,43 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   const svgHeight = 60;
   const padding = 5;
   
-  // Use the provided intervals directly; the parent now supplies arrays representing the two previous 24h periods.
+  // Compute the X coordinate based on linear time scale
   const computeX = (dt: Date, base: Date): number => {
     const diff = dt.getTime() - base.getTime();
     const fraction = diff / (24 * 60 * 60 * 1000);
     return padding + fraction * (viewBoxWidth - 2 * padding);
   };
 
+  /**
+   * Compute SVG polyline points for a group of intervals.
+   * 
+   * Added improvement: if the maximum cost is above $1, a logarithmic transformation
+   * is applied (using an offset of 1) to compress outlier spikes while still showing
+   * lower values with more context.
+   */
   const computePoints = (intervals: AemoInterval[], base: Date): string => {
-    // Determine the maximum cost across the combined intervals.
     const allCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
       EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
     );
     const maxCost = allCosts.length > 0 ? Math.max(...allCosts) : 0;
+    const useLogScale = maxCost > 1; // Use log scale if max cost > $1
+    const offset = 1; // Offset added to cost for log transformation to avoid log(0)
+    let maxScaled = maxCost;
+    if(useLogScale) {
+      const allScaled = allCosts.map(c => Math.log(c + offset));
+      maxScaled = Math.max(...allScaled);
+    }
     return intervals.map(iv => {
       const dt = new Date(iv.SETTLEMENTDATE + '+10:00');
       const retailRate = getRetailRateFromInterval(iv, region, false, true);
       const cost = EnergyScenarios.getCostForScenario(scenarioKey, retailRate);
       const x = computeX(dt, base);
-      const y = svgHeight - padding - ((cost / (maxCost || 1)) * (svgHeight - 2 * padding));
-      console.log(`SparklineChart Data point: SETTLEMENTDATE=${iv.SETTLEMENTDATE}, Parsed Date=${dt}, retailRate=${retailRate.toFixed(3)} c/kWh, cost=${cost.toFixed(4)} $, x=${x.toFixed(2)}, y=${y.toFixed(2)}`);
+      let scaledValue = cost;
+      if(useLogScale) {
+        scaledValue = Math.log(cost + offset);
+      }
+      const y = svgHeight - padding - ((scaledValue / (maxScaled || 1)) * (svgHeight - 2 * padding));
+      console.log(`SparklineChart Data point: SETTLEMENTDATE=${iv.SETTLEMENTDATE}, Parsed Date=${dt}, retailRate=${retailRate.toFixed(3)} c/kWh, cost=${cost.toFixed(4)} $, scaledValue=${scaledValue.toFixed(4)}, x=${x.toFixed(2)}, y=${y.toFixed(2)}`);
       return `${x},${y}`;
     }).join(' ');
   };
@@ -306,11 +323,18 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   const todayPoints = computePoints(todayIntervals, recentPeriodBase);
   const yesterdayPoints = computePoints(yesterdayIntervals, previousPeriodBase);
 
-  const allCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
+  // Compute overall maximum cost for reference line.
+  const overallAllCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
     EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
   );
-  const maxCost = allCosts.length > 0 ? Math.max(...allCosts) : 0;
-  const yRef = svgHeight - padding - ((maxCost / (maxCost || 1)) * (svgHeight - 2 * padding));
+  const overallMaxCost = overallAllCosts.length > 0 ? Math.max(...overallAllCosts) : 0;
+  const useLogScale = overallMaxCost > 1;
+  const offset = 1;
+  let overallMaxScaled = overallMaxCost;
+  if(useLogScale) {
+    overallMaxScaled = Math.max(...overallAllCosts.map(c => Math.log(c + offset)));
+  }
+  const yRef = svgHeight - padding - (((useLogScale ? Math.log(overallMaxCost + offset) : overallMaxCost) / (useLogScale ? overallMaxScaled : (overallMaxCost || 1))) * (svgHeight - 2 * padding));
 
   // Build final chart data object
   const chartData = {
@@ -330,7 +354,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   return (
     <Box mt={2}>
       <Typography variant="subtitle2">
-        24‑Hour Trend (Recent 24h in blue, Previous 24h in grey)
+        24‑Hour Trend (Recent 24h in blue, Previous 24h in grey){useLogScale ? " (Log Scale Applied)" : ""}
       </Typography>
       <svg width="100%" viewBox={`0 0 ${viewBoxWidth} ${svgHeight}`} aria-label="24-hour scenario cost trend">
         {yesterdayIntervals.length > 0 && (
@@ -341,7 +365,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
         )}
         <line x1={padding} y1={yRef} x2={viewBoxWidth - padding} y2={yRef} stroke="#ff0000" strokeDasharray="4" strokeWidth="1" />
         <text x={padding + 2} y={yRef - 2} fill="#ff0000" fontSize="10">
-          Max: {formatCurrency(maxCost)}
+          Max: {formatCurrency(overallMaxCost)}
         </text>
       </svg>
     </Box>
@@ -646,7 +670,6 @@ const App: React.FC = () => {
                       <Typography variant="h4" color="secondary" sx={{ transition: 'all 0.5s ease' }}>
                         {formatCurrency(toastCostDollars)}
                       </Typography>
-                      {/* currentRegionTag would be appended here if applicable */}
                     </Box>
                     <Typography variant="subtitle1" align="center">(per scenario usage)</Typography>
                   </Box>
