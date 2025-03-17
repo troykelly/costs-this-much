@@ -267,61 +267,71 @@ enum TouPeriod {
 }
 
 /**
- * Determines the time-of-use period for the given date & region.
+ * SparklineChart displays a 24‑hour line chart for today (blue) and yesterday (grey),
+ * with a horizontal red reference line indicating the maximum cost.
  */
-function getTimeOfUsePeriodForRegion(date: Date, region: SupportedRegion): TouPeriod {
-  const hour = date.getHours();
-  const dayIsWeekend = isWeekend(date);
-  switch (region) {
-    case 'nsw': {
-      if (!dayIsWeekend) {
-        if (hour >= 14 && hour < 20) return TouPeriod.PEAK;
-        else if ((hour >= 7 && hour < 14) || (hour >= 20 && hour < 22)) return TouPeriod.SHOULDER;
-        else return TouPeriod.OFFPEAK;
-      } else {
-        if (hour >= 7 && hour < 22) return TouPeriod.SHOULDER;
-        else return TouPeriod.OFFPEAK;
-      }
-    }
-    case 'qld': {
-      if (!dayIsWeekend) {
-        if (hour >= 16 && hour < 20) return TouPeriod.PEAK;
-        else if ((hour >= 7 && hour < 16) || (hour >= 20 && hour < 22)) return TouPeriod.SHOULDER;
-        else return TouPeriod.OFFPEAK;
-      } else {
-        if (hour >= 7 && hour < 22) return TouPeriod.SHOULDER;
-        else return TouPeriod.OFFPEAK;
-      }
-    }
-    case 'vic': {
-      if (!dayIsWeekend) {
-        if (hour >= 15 && hour < 21) return TouPeriod.PEAK;
-        else if ((hour >= 7 && hour < 15) || (hour >= 21 && hour < 22)) return TouPeriod.SHOULDER;
-        else return TouPeriod.OFFPEAK;
-      } else {
-        if (hour >= 7 && hour < 22) return TouPeriod.SHOULDER;
-        else return TouPeriod.OFFPEAK;
-      }
-    }
-    case 'sa': {
-      if (hour >= 1 && hour < 6)
-        return TouPeriod.OFFPEAK;
-      if ((hour >= 6 && hour < 10) || (hour >= 15 && hour <= 23) || hour === 0)
-        return TouPeriod.PEAK;
-      return TouPeriod.SHOULDER;
-    }
-    case 'tas': {
-      if (!dayIsWeekend) {
-        const isMorningPeak = hour >= 7 && hour < 10;
-        const isEveningPeak = hour >= 16 && hour < 21;
-        if (isMorningPeak || isEveningPeak) return TouPeriod.PEAK;
-        return TouPeriod.OFFPEAK;
-      } else {
-        return TouPeriod.OFFPEAK;
-      }
-    }
-  }
+interface SparklineChartProps {
+  todayIntervals: AemoInterval[];
+  yesterdayIntervals: AemoInterval[];
+  region: SupportedRegion;
 }
+const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterdayIntervals, region }) => {
+  const viewBoxWidth = 500;
+  const svgHeight = 60;
+  const padding = 5;
+  // Use toLocaleString rather than toLocaleDateString for correct Australia/Brisbane midnight
+  const todayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
+  const yesterdayMidnight = new Date(todayMidnight.getTime() - 24 * 60 * 60 * 1000);
+
+  const computeX = (dt: Date, base: Date): number => {
+    const diff = dt.getTime() - base.getTime();
+    const fraction = diff / (24 * 60 * 60 * 1000);
+    return padding + fraction * (viewBoxWidth - 2 * padding);
+  };
+
+  const computePoints = (intervals: AemoInterval[], base: Date): string => {
+    const allRates = [...todayIntervals, ...yesterdayIntervals].map(iv =>
+      getRetailRateFromInterval(iv, region, false, true)
+    );
+    const maxRate = allRates.length > 0 ? Math.max(...allRates) : 0;
+    return intervals.map(iv => {
+      const dt = new Date(iv.SETTLEMENTDATE + '+10:00');
+      const x = computeX(dt, base);
+      const rate = getRetailRateFromInterval(iv, region, false, true);
+      const y = svgHeight - padding - ((rate / (maxRate || 1)) * (svgHeight - 2 * padding));
+      return `${x},${y}`;
+    }).join(' ');
+  };
+
+  const todayPoints = computePoints(todayIntervals, todayMidnight);
+  const yesterdayPoints = computePoints(yesterdayIntervals, yesterdayMidnight);
+
+  const allRates = [...todayIntervals, ...yesterdayIntervals].map(iv =>
+    getRetailRateFromInterval(iv, region, false, true)
+  );
+  const maxRate = allRates.length > 0 ? Math.max(...allRates) : 0;
+  const yRef = svgHeight - padding - ((maxRate / (maxRate || 1)) * (svgHeight - 2 * padding));
+
+  return (
+    <Box mt={2}>
+      <Typography variant="subtitle2">
+        24‑Hour Trend (Today in blue, Yesterday in grey)
+      </Typography>
+      <svg width="100%" viewBox={`0 0 ${viewBoxWidth} ${svgHeight}`} aria-label="24-hour retail rate trend">
+        {yesterdayIntervals.length > 0 && (
+          <polyline fill="none" stroke="#888888" strokeWidth="2" points={yesterdayPoints} />
+        )}
+        {todayIntervals.length > 0 && (
+          <polyline fill="none" stroke="#1976d2" strokeWidth="2" points={todayPoints} />
+        )}
+        <line x1={padding} y1={yRef} x2={viewBoxWidth - padding} y2={yRef} stroke="#ff0000" strokeDasharray="4" strokeWidth="1" />
+        <text x={padding + 2} y={yRef - 2} fill="#ff0000" fontSize="10">
+          Max: {maxRate.toFixed(2)} c/kWh
+        </text>
+      </svg>
+    </Box>
+  );
+};
 
 ///////////////////////////////////////////////////////////////////////////
 // Main App Component
