@@ -305,8 +305,9 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
     }).join(' ');
   };
 
-  const todayPoints = computePoints(todayIntervals, todayMidnight);
-  const yesterdayPoints = computePoints(yesterdayIntervals, yesterdayMidnight);
+  // Fixed usage: replaced undefined todayMidnight/yesterdayMidnight with brisbaneTodayMidnight/brisbaneYesterdayMidnight.
+  const todayPoints = computePoints(todayIntervals, brisbaneTodayMidnight);
+  const yesterdayPoints = computePoints(yesterdayIntervals, brisbaneYesterdayMidnight);
 
   const allRates = [...todayIntervals, ...yesterdayIntervals].map(iv =>
     getRetailRateFromInterval(iv, region, false, true)
