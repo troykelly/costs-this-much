@@ -283,20 +283,27 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   const viewBoxWidth = 500;
   const svgHeight = 60;
   const padding = 5;
-  // Use toLocaleString (en-AU) for correct Australia/Brisbane midnight.
+  
+  // Calculate Brisbane midnight boundaries
   const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
   const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
   const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
-
-  // Log the raw intervals arrays along with computed scenario costs.
-  console.log("SparklineChart - Today intervals (raw):", todayIntervals.map(iv => ({
-    date: iv.SETTLEMENTDATE,
-    computedCost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
-  })));
-  console.log("SparklineChart - Yesterday intervals (raw):", yesterdayIntervals.map(iv => ({
-    date: iv.SETTLEMENTDATE,
-    computedCost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
-  })));
+  
+  console.log("SparklineChart - Brisbane Today Midnight:", brisbaneTodayMidnight);
+  console.log("SparklineChart - Brisbane Tomorrow Midnight:", brisbaneTomorrowMidnight);
+  console.log("SparklineChart - Brisbane Yesterday Midnight:", brisbaneYesterdayMidnight);
+  
+  // Log raw intervals (with parsed dates) for today and yesterday.
+  console.log("SparklineChart - Raw Today Intervals:");
+  todayIntervals.forEach(iv => {
+    const d = new Date(iv.SETTLEMENTDATE);
+    console.log(`Interval: ${iv.SETTLEMENTDATE} parsed as ${d}`);
+  });
+  console.log("SparklineChart - Raw Yesterday Intervals:");
+  yesterdayIntervals.forEach(iv => {
+    const d = new Date(iv.SETTLEMENTDATE);
+    console.log(`Interval: ${iv.SETTLEMENTDATE} parsed as ${d}`);
+  });
 
   const computeX = (dt: Date, base: Date): number => {
     const diff = dt.getTime() - base.getTime();
@@ -305,7 +312,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   };
 
   const computePoints = (intervals: AemoInterval[], base: Date): string => {
-    // Determine the maximum cost across the combined today and yesterday intervals.
+    // Determine the maximum cost across the combined intervals.
     const allCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
       EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
     );
@@ -316,7 +323,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
       const cost = EnergyScenarios.getCostForScenario(scenarioKey, retailRate);
       const x = computeX(dt, base);
       const y = svgHeight - padding - ((cost / (maxCost || 1)) * (svgHeight - 2 * padding));
-      console.log(`Data point: date=${iv.SETTLEMENTDATE}, retailRate=${retailRate.toFixed(3)} c/kWh, cost=${cost.toFixed(4)} $, x=${x.toFixed(2)}, y=${y.toFixed(2)}`);
+      console.log(`SparklineChart Data point: SETTLEMENTDATE=${iv.SETTLEMENTDATE}, Parsed Date=${dt}, retailRate=${retailRate.toFixed(3)} c/kWh, cost=${cost.toFixed(4)} $, x=${x.toFixed(2)}, y=${y.toFixed(2)}`);
       return `${x},${y}`;
     }).join(' ');
   };
@@ -330,7 +337,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   const maxCost = allCosts.length > 0 ? Math.max(...allCosts) : 0;
   const yRef = svgHeight - padding - ((maxCost / (maxCost || 1)) * (svgHeight - 2 * padding));
 
-  // Prepare chart data for debugging.
+  // Build final chart data object
   const chartData = {
     today: todayIntervals.map(iv => ({
       date: iv.SETTLEMENTDATE,
@@ -343,7 +350,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
     todayPoints,
     yesterdayPoints
   };
-  console.log("SparklineChart - Final Chart Data:", JSON.stringify(chartData, null, 2));
+  console.log("SparklineChart - Final Chart Data Object:", JSON.stringify(chartData, null, 2));
 
   return (
     <Box mt={2}>
@@ -454,9 +461,11 @@ const App: React.FC = () => {
         throw new Error(`Network response was not OK. Status: ${response.status}`);
       }
       const data: { '5MIN': AemoInterval[] } = await response.json();
+      console.log("Fetched AEMO intervals (raw):", data['5MIN'].length);
       setAllIntervals(data['5MIN']);
       const regData: AemoInterval[] = data['5MIN'].filter(iv => iv.REGIONID === regionFilter);
       regData.sort((a, b) => new Date(a.SETTLEMENTDATE).getTime() - new Date(b.SETTLEMENTDATE).getTime());
+      console.log("Fetched regionIntervals for region", regionFilter, ":", regData.length);
       setRegionIntervals(regData);
       if (regData.length > 0) {
         const latest = regData[regData.length - 1];
@@ -488,6 +497,30 @@ const App: React.FC = () => {
     const intervalId = setInterval(fetchAemoData, 5 * 60 * 1000);
     return () => clearInterval(intervalId);
   }, [regionFilter, scenarioKeyStr]);
+
+  // Compute Australian midnight boundaries using toLocaleString for accurate conversion.
+  const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
+  const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
+  const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
+  
+  console.log("App Component - Brisbane Today Midnight:", brisbaneTodayMidnight);
+  console.log("App Component - Brisbane Tomorrow Midnight:", brisbaneTomorrowMidnight);
+  console.log("App Component - Brisbane Yesterday Midnight:", brisbaneYesterdayMidnight);
+
+  // Filter intervals for today and yesterday based on parsed SETTLEMENTDATE.
+  const todayIntervals = regionIntervals.filter(iv => {
+    const d = new Date(iv.SETTLEMENTDATE);
+    console.log("Today filtering: SETTLEMENTDATE=", iv.SETTLEMENTDATE, " parsed as ", d);
+    return d >= brisbaneTodayMidnight && d < brisbaneTomorrowMidnight;
+  });
+  const yesterdayIntervals = regionIntervals.filter(iv => {
+    const d = new Date(iv.SETTLEMENTDATE);
+    console.log("Yesterday filtering: SETTLEMENTDATE=", iv.SETTLEMENTDATE, " parsed as ", d);
+    return d >= brisbaneYesterdayMidnight && d < brisbaneTodayMidnight;
+  });
+
+  console.log("App Component - Computed todayIntervals length:", todayIntervals.length);
+  console.log("App Component - Computed yesterdayIntervals length:", yesterdayIntervals.length);
 
   // Compute cheapest and most expensive intervals for the current region.
   let cheapestCost: number | null = null;
@@ -628,57 +661,6 @@ const App: React.FC = () => {
       }
     );
   };
-
-  // Compute Australian midnight boundaries using toLocaleString for accurate conversion.
-  const nowTime = new Date();
-  const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
-  const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
-  const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
-  // Updated: Removed the appended '+10:00' so that SETTLEMENTDATE parses directly.
-  const todayIntervals = regionIntervals.filter(iv => {
-    const d = new Date(iv.SETTLEMENTDATE);
-    return d >= brisbaneTodayMidnight && d < brisbaneTomorrowMidnight;
-  });
-  const yesterdayIntervals = regionIntervals.filter(iv => {
-    const d = new Date(iv.SETTLEMENTDATE);
-    return d >= brisbaneYesterdayMidnight && d < brisbaneTodayMidnight;
-  });
-
-  console.log("App Component - Computed todayIntervals length:", todayIntervals.length);
-  console.log("App Component - Computed yesterdayIntervals length:", yesterdayIntervals.length);
-
-  // Daily summaries grouped by day.
-  const dailySummaries = useMemo(() => {
-    const groups: { [day: string]: AemoInterval[] } = {};
-    regionIntervals.forEach(iv => {
-      const day = iv.SETTLEMENTDATE.slice(0, 10);
-      if (!groups[day]) groups[day] = [];
-      groups[day].push(iv);
-    });
-    const summaries: { date: string; minWholesale: number; minRetail: number; maxWholesale: number; maxRetail: number }[] = [];
-    for (const day in groups) {
-      const ivs = groups[day];
-      let minIv = ivs[0];
-      let maxIv = ivs[0];
-      ivs.forEach(iv => {
-        if (computeWholesale(iv.RRP) < computeWholesale(minIv.RRP)) {
-          minIv = iv;
-        }
-        if (computeWholesale(iv.RRP) > computeWholesale(maxIv.RRP)) {
-          maxIv = iv;
-        }
-      });
-      summaries.push({
-        date: day,
-        minWholesale: computeWholesale(minIv.RRP),
-        minRetail: getRetailRateFromInterval(minIv, regionKey as SupportedRegion, false, true),
-        maxWholesale: computeWholesale(maxIv.RRP),
-        maxRetail: getRetailRateFromInterval(maxIv, regionKey as SupportedRegion, false, true)
-      });
-    }
-    summaries.sort((a, b) => a.date.localeCompare(b.date));
-    return summaries;
-  }, [regionIntervals, regionKey]);
 
   return (
     <Box display="flex" flexDirection="column" minHeight="100vh">
