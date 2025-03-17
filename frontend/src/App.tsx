@@ -194,21 +194,27 @@ function getScenarioIcon(iconName?: string): JSX.Element {
 function ScenarioNotFound({ scenarioKey }: { scenarioKey: string }): JSX.Element {
   return (
     <Box display="flex" flexDirection="column" height="100vh" alignItems="center" justifyContent="center" textAlign="center" bgcolor="#fafafa">
-      <Typography variant="h3" gutterBottom>404 - Scenario Not Found</Typography>
-      <Typography variant="body1">The requested scenario &quot;{scenarioKey}&quot; does not exist.</Typography>
+      <Typography variant="h3" gutterBottom>
+        404 - Scenario Not Found
+      </Typography>
+      <Typography variant="body1">
+        The requested scenario &quot;{scenarioKey}&quot; does not exist.
+      </Typography>
       <Box m={2}>
-        <Button variant="contained" onClick={() => (window.location.href = '/')}>Go Home</Button>
+        <Button variant="contained" onClick={() => (window.location.href = '/')}>
+          Go Home
+        </Button>
       </Box>
     </Box>
   );
 }
 
 /**
- * Sets or creates a meta tag for dynamic metadata.
+ * Sets or creates a meta tag in the document head for dynamic metadata.
  *
- * @param {string} attrName Meta attribute name.
- * @param {string} attrValue Meta attribute value.
- * @param {string} content Meta content.
+ * @param {string} attrName The name of the meta attribute (e.g., "property", "name").
+ * @param {string} attrValue The value for the attribute (e.g., "og:title", "DC.title").
+ * @param {string} content The meta content to apply.
  */
 function setMetaTag(attrName: string, attrValue: string, content: string): void {
   let element = document.querySelector(`meta[${attrName}="${attrValue}"]`);
@@ -221,7 +227,7 @@ function setMetaTag(attrName: string, attrValue: string, content: string): void 
 }
 
 /**
- * Ray-casting algorithm to determine if point is inside polygon.
+ * Ray-casting algorithm to determine if a point is inside a polygon.
  *
  * @param {number[][]} polygon Array of [lon, lat] pairs.
  * @param {number} lat The latitude.
@@ -233,14 +239,15 @@ function isPointInPolygon(polygon: number[][], lat: number, lon: number): boolea
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
     const xi = polygon[i][1], yi = polygon[i][0];
     const xj = polygon[j][1], yj = polygon[j][0];
-    const intersect = ((yi > lon) !== (yj > lon)) && (lat < (xj - xi) * (lon - yi) / (yj - yi) + xi);
+    const intersect = ((yi > lon) !== (yj > lon))
+      && (lat < (xj - xi) * (lon - yi) / (yj - yi) + xi);
     if (intersect) inside = !inside;
   }
   return inside;
 }
 
 /**
- * Given rings from GeoJSON, check if point is inside the outer ring.
+ * Given rings from GeoJSON, checks if point is inside the outer ring.
  *
  * @param {number[][][]} ringArray Array of rings.
  * @param {number} lat The latitude.
@@ -254,11 +261,11 @@ function isPointInRingArray(ringArray: number[][][], lat: number, lon: number): 
 }
 
 /**
- * Determines the AU state name for lat/lon using the GeoJSON.
+ * Determines which AU state name the given lat/lon belongs to using GeoJSON.
  *
  * @param {number} lat The latitude.
  * @param {number} lon The longitude.
- * @return {string | null} State name or null.
+ * @return {string | null} The state name, or null if not found.
  */
 function getStateNameForLatLon(lat: number, lon: number): string | null {
   for (const feature of statesData.features) {
@@ -279,10 +286,10 @@ function getStateNameForLatLon(lat: number, lon: number): string | null {
 }
 
 /**
- * Maps a full state name to a region key.
+ * Maps a full state name to one of the supported region keys.
  *
- * @param {string} stateName Full state name.
- * @return {string | null} Region key or null.
+ * @param {string} stateName The full state name from the GeoJSON.
+ * @return {string | null} The corresponding short region name, or null.
  */
 function mapStateNameToRegionKey(stateName: string): string | null {
   const lowerName = stateName.toLowerCase();
@@ -295,7 +302,7 @@ function mapStateNameToRegionKey(stateName: string): string | null {
 }
 
 /**
- * Determines if the given date is on a weekend.
+ * Determines if a date is on a weekend.
  *
  * @param {Date} date The date.
  * @return {boolean} True if Saturday or Sunday.
@@ -306,11 +313,7 @@ function isWeekend(date: Date): boolean {
 }
 
 /**
- * Determines the time-of-use period for a given date and region.
- *
- * @param {Date} date The date.
- * @param {SupportedRegion} region The region.
- * @return {TouPeriod} The TOU period.
+ * Enum for time-of-use periods.
  */
 enum TouPeriod {
   PEAK = 'peak',
@@ -318,6 +321,13 @@ enum TouPeriod {
   OFFPEAK = 'offpeak'
 }
 
+/**
+ * Determines the time-of-use period for a given date and region.
+ *
+ * @param {Date} date The date to evaluate.
+ * @param {SupportedRegion} region The region code.
+ * @return {TouPeriod} 'peak', 'shoulder', or 'offpeak'.
+ */
 function getTimeOfUsePeriodForRegion(date: Date, region: SupportedRegion): TouPeriod {
   const hour = date.getHours();
   const dayIsWeekend = isWeekend(date);
@@ -369,93 +379,17 @@ function getTimeOfUsePeriodForRegion(date: Date, region: SupportedRegion): TouPe
 }
 
 /**
- * Converts RRP in $/MWh to wholesale cents/kWh, flooring negatives to zero.
+ * Converts RRP in $/MWh to wholesale cents/kWh (negative values floored to zero).
  *
- * @param {number} rrpInDollarsMWh RRP value.
- * @return {number} Wholesale price in c/kWh.
+ * @param {number} rrpInDollarsMWh The RRP value.
+ * @return {number} The wholesale price in c/kWh.
  */
 function convertRrpToWholesaleCents(rrpInDollarsMWh: number): number {
   const rawCents = rrpInDollarsMWh * 0.1;
   return rawCents < 0 ? 0 : rawCents;
 }
 
-/**
- * Computes the approximate retail rate in c/kWh for a 5-minute interval.
- *
- * @param {AemoInterval} interval The AEMO interval.
- * @param {SupportedRegion} region The region.
- * @param {boolean} isBusiness If true, apply small business surcharge.
- * @param {boolean} includeGst If true, include GST.
- * @return {number} The computed retail rate in c/kWh.
- */
-export function getRetailRateFromInterval(
-  interval: AemoInterval,
-  region: SupportedRegion,
-  isBusiness: boolean = false,
-  includeGst: boolean = true
-): number {
-  const intervalDate = new Date(interval.SETTLEMENTDATE);
-  const timeOfUse = getTimeOfUsePeriodForRegion(intervalDate, region);
-  const wholesaleCents = convertRrpToWholesaleCents(interval.RRP);
-  const regionConfig = {
-    nsw: {
-      peakNetworkCents: 12.0,
-      shoulderNetworkCents: 7.0,
-      offpeakNetworkCents: 3.7,
-      envCents: 3.0,
-      retailOpsCents: 2.0,
-      marginCents: 2.0,
-      businessSurchargeCents: 1.0
-    },
-    qld: {
-      peakNetworkCents: 11.0,
-      shoulderNetworkCents: 6.0,
-      offpeakNetworkCents: 3.3,
-      envCents: 2.5,
-      retailOpsCents: 2.0,
-      marginCents: 1.5,
-      businessSurchargeCents: 1.0
-    },
-    vic: {
-      peakNetworkCents: 10.0,
-      shoulderNetworkCents: 6.0,
-      offpeakNetworkCents: 3.0,
-      envCents: 2.0,
-      retailOpsCents: 2.5,
-      marginCents: 1.5,
-      businessSurchargeCents: 1.0
-    },
-    sa: {
-      peakNetworkCents: 20.0,
-      shoulderNetworkCents: 12.0,
-      offpeakNetworkCents: 8.0,
-      envCents: 1.5,
-      retailOpsCents: 2.5,
-      marginCents: 2.0,
-      businessSurchargeCents: 1.5
-    },
-    tas: {
-      peakNetworkCents: 14.0,
-      shoulderNetworkCents: 10.0,
-      offpeakNetworkCents: 5.0,
-      envCents: 1.0,
-      retailOpsCents: 2.0,
-      marginCents: 1.0,
-      businessSurchargeCents: 1.0
-    }
-  }[region];
-
-  let networkCents = regionConfig.offpeakNetworkCents;
-  if (timeOfUse === TouPeriod.PEAK) networkCents = regionConfig.peakNetworkCents;
-  else if (timeOfUse === TouPeriod.SHOULDER) networkCents = regionConfig.shoulderNetworkCents;
-
-  let rateExGst =
-    wholesaleCents + networkCents + regionConfig.envCents + regionConfig.retailOpsCents + regionConfig.marginCents;
-  if (isBusiness && regionConfig.businessSurchargeCents) {
-    rateExGst += regionConfig.businessSurchargeCents;
-  }
-  return includeGst ? rateExGst * 1.1 : rateExGst;
-}
+// Note: The getRetailRateFromInterval function is now imported from pricingCalculator.ts
 
 const App: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
@@ -543,9 +477,7 @@ const App: React.FC = () => {
   }
 
   const scenarioData = EnergyScenarios.getScenarioById(scenarioKey);
-  if (!scenarioData) {
-    return <ScenarioNotFound scenarioKey={scenarioKey} />;
-  }
+  if (!scenarioData) return <ScenarioNotFound scenarioKey={scenarioKey} />;
 
   const fetchAemoData = async (): Promise<void> => {
     try {
@@ -564,7 +496,6 @@ const App: React.FC = () => {
       regionData.sort((a, b) =>
         new Date(a.SETTLEMENTDATE).getTime() - new Date(b.SETTLEMENTDATE).getTime()
       );
-
       if (regionData.length > 0) {
         const latest = regionData[regionData.length - 1];
         let wholesaleCents = latest.RRP * 0.1;
@@ -664,12 +595,7 @@ const App: React.FC = () => {
    *
    * @return {Array} Array of objects with region, wholesale, cost, and date.
    */
-  function getReferenceCosts(): {
-    region: string;
-    wholesaleCents: number;
-    scenarioCost: number;
-    date: string;
-  }[] {
+  function getReferenceCosts(): { region: string; wholesaleCents: number; scenarioCost: number; date: string }[] {
     const otherRegions = Object.keys(regionMapping).filter(r => r !== regionKey);
     const results: { region: string; wholesaleCents: number; scenarioCost: number; date: string }[] = [];
     for (const r of otherRegions) {
@@ -776,11 +702,15 @@ const App: React.FC = () => {
         <Box sx={{ width: 250 }} role="presentation" onClick={toggleDrawer(false)} onKeyDown={toggleDrawer(false)}>
           <List>
             <ListItem button onClick={() => handleScenarioChange('toast')}>
-              <ListItemIcon><BreakfastDiningIcon /></ListItemIcon>
+              <ListItemIcon>
+                <BreakfastDiningIcon />
+              </ListItemIcon>
               <ListItemText primary="Home" />
             </ListItem>
             <ListItem button onClick={() => (window.location.href = '/about')}>
-              <ListItemIcon><InfoIcon /></ListItemIcon>
+              <ListItemIcon>
+                <InfoIcon />
+              </ListItemIcon>
               <ListItemText primary="About" />
             </ListItem>
             {EnergyScenarios.getAllScenarios().map((item) => (
@@ -793,7 +723,12 @@ const App: React.FC = () => {
         </Box>
       </Drawer>
 
-      <Box component="main" flexGrow={1} display="flex" justifyContent="center" alignItems="flex-start" bgcolor="#fafafa">
+      <Box component="main"
+           flexGrow={1}
+           display="flex"
+           justifyContent="center"
+           alignItems="flex-start"
+           bgcolor="#fafafa">
         <Box sx={{ marginBottom: 4 }}>
           <Box sx={{ marginBottom: 2 }}>
             <FormControl fullWidth>
@@ -812,7 +747,10 @@ const App: React.FC = () => {
           </Box>
 
           <Card sx={{ maxWidth: 480, width: '100%' }}>
-            <CardHeader avatar={scenarioIconElement} title={`Cost for ${scenarioName}`} />
+            <CardHeader
+              avatar={scenarioIconElement}
+              title={`Cost for ${scenarioName}`}
+            />
             <CardContent>
               {loading ? (
                 <Box display="flex" justifyContent="center" mt={2}>
@@ -820,7 +758,11 @@ const App: React.FC = () => {
                 </Box>
               ) : (
                 <>
-                  <Box display="flex" flexDirection="column" justifyContent="center" alignItems="center" mb={3}>
+                  <Box display="flex"
+                       flexDirection="column"
+                       justifyContent="center"
+                       alignItems="center"
+                       mb={3}>
                     <Box display="flex" alignItems="center" mb={1}>
                       <MonetizationOnIcon fontSize="large" sx={{ marginRight: 1 }} />
                       <Typography variant="h4" color="secondary">
@@ -828,19 +770,27 @@ const App: React.FC = () => {
                       </Typography>
                       {currentRegionTag}
                     </Box>
-                    <Typography variant="subtitle1" align="center">(per scenario usage)</Typography>
+                    <Typography variant="subtitle1" align="center">
+                      (per scenario usage)
+                    </Typography>
                   </Box>
-                  <Typography variant="body1" gutterBottom>Region: {regionFilter}</Typography>
+                  <Typography variant="body1" gutterBottom>
+                    Region: {regionFilter}
+                  </Typography>
                   <Typography variant="body1" gutterBottom>
                     {'Current Wholesale Spot Price: ' + rrpCentsPerKWh.toFixed(3)} c/kWh{' '}
                     <Tooltip title="This is the real-time five-minute wholesale electricity price from AEMO. Negative values are floored to 0.">
-                      <IconButton size="small"><InfoIcon fontSize="inherit" /></IconButton>
+                      <IconButton size="small">
+                        <InfoIcon fontSize="inherit" />
+                      </IconButton>
                     </Tooltip>
                   </Typography>
                   <Typography variant="body1" gutterBottom>
                     {'Final Price (incl. GST): ' + finalRateCents.toFixed(3)} c/kWh{' '}
                     <Tooltip title="This is the approximate retail rate, including wholesale, network, environment, overheads, margin, and GST.">
-                      <IconButton size="small"><InfoIcon fontSize="inherit" /></IconButton>
+                      <IconButton size="small">
+                        <InfoIcon fontSize="inherit" />
+                      </IconButton>
                     </Tooltip>
                   </Typography>
                   {scenarioDescription && (
@@ -853,7 +803,9 @@ const App: React.FC = () => {
                       <Typography variant="subtitle1">Assumptions:</Typography>
                       <ul>
                         {scenarioData.assumptions.map((assumption, index) => (
-                          <li key={index}><Typography variant="body2">{assumption}</Typography></li>
+                          <li key={index}>
+                            <Typography variant="body2">{assumption}</Typography>
+                          </li>
                         ))}
                       </ul>
                     </Box>
@@ -868,21 +820,30 @@ const App: React.FC = () => {
               <Typography variant="caption">
                 Interval used for calculation: {formatIntervalDate(usedIntervalDate)}
                 <Tooltip title="Note that AEMO operates on National Electricity Market (NEM) time, which does not align with daylight saving in some states.">
-                  <IconButton size="small"><InfoIcon fontSize="inherit" /></IconButton>
+                  <IconButton size="small">
+                    <InfoIcon fontSize="inherit" />
+                  </IconButton>
                 </Tooltip>
               </Typography>
             </CardActions>
           </Card>
 
-          <Box display="flex" flexDirection="row" justifyContent="space-between" sx={{ maxWidth: 480, width: '100%', marginTop: 2 }}>
+          <Box display="flex"
+               flexDirection="row"
+               justifyContent="space-between"
+               sx={{ maxWidth: 480, width: '100%', marginTop: 2 }}>
             <Card sx={{ width: '48%' }}>
               <CardHeader title="Cheapest" />
               <CardContent>
                 {cheapestCost !== null && cheapestInterval ? (
                   <Tooltip arrow title={`Wholesale: ${cheapestWholesaleCents.toFixed(3)} c/kWh\nRetail: ${cheapestIntervalRate.toFixed(3)} c/kWh`}>
                     <Box>
-                      <Typography variant="h4" color="secondary">{'$' + cheapestCost.toFixed(6)}</Typography>
-                      <Typography variant="h6">{formatIntervalTimeRange(cheapestInterval.SETTLEMENTDATE)}</Typography>
+                      <Typography variant="h4" color="secondary">
+                        {'$' + cheapestCost.toFixed(6)}
+                      </Typography>
+                      <Typography variant="h6">
+                        {formatIntervalTimeRange(cheapestInterval.SETTLEMENTDATE)}
+                      </Typography>
                       <Calendar
                         value={new Date(cheapestInterval.SETTLEMENTDATE + '+10:00')}
                         minDetail="month"
@@ -905,8 +866,12 @@ const App: React.FC = () => {
                 {expensiveCost !== null && expensiveInterval ? (
                   <Tooltip arrow title={`Wholesale: ${expensiveWholesaleCents.toFixed(3)} c/kWh\nRetail: ${expensiveIntervalRate.toFixed(3)} c/kWh`}>
                     <Box>
-                      <Typography variant="h4" color="secondary">{'$' + expensiveCost.toFixed(6)}</Typography>
-                      <Typography variant="h6">{formatIntervalTimeRange(expensiveInterval.SETTLEMENTDATE)}</Typography>
+                      <Typography variant="h4" color="secondary">
+                        {'$' + expensiveCost.toFixed(6)}
+                      </Typography>
+                      <Typography variant="h6">
+                        {formatIntervalTimeRange(expensiveInterval.SETTLEMENTDATE)}
+                      </Typography>
                       <Calendar
                         value={new Date(expensiveInterval.SETTLEMENTDATE + '+10:00')}
                         minDetail="month"
@@ -924,9 +889,11 @@ const App: React.FC = () => {
             </Card>
           </Box>
 
-          {/* Restore reference grid for other region data */}
+          {/* Reference grid for other region data */}
           <Box sx={{ maxWidth: 480, width: '100%', marginTop: 2 }}>
-            <Typography variant="h6" gutterBottom>Reference Costs for Other Regions</Typography>
+            <Typography variant="h6" gutterBottom>
+              Reference Costs for Other Regions
+            </Typography>
             <Grid container spacing={2}>
               {referenceCosts.map((item) => {
                 const cost = item.scenarioCost;
@@ -992,7 +959,8 @@ const App: React.FC = () => {
         <DialogTitle>Location Data Request</DialogTitle>
         <DialogContent>
           <Typography variant="body1">
-            We are about to request your location data. This is entirely voluntary and will only be used to help present regional pricing information based on your position.
+            We are about to request your location data. This is entirely voluntary and
+            will only be used to help present regional pricing information based on your position.
           </Typography>
         </DialogContent>
         <DialogActions>
