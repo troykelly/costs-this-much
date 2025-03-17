@@ -11,8 +11,8 @@
  *  - A manual refresh button.
  *  - Accessible icons with aria‑labels and tooltips.
  *  - Smooth transitions when pricing numbers update.
- *  - An overlaid 24‑hour trend chart displaying today's scenario cost (blue) and the previous day's (grey)
- *    with a horizontal red reference line indicating the maximum cost.
+ *  - An overlaid 24‑hour trend chart displaying the latest 24‑hour period (blue)
+ *    and the previous 24‑hour period (grey) with a horizontal red reference line indicating the maximum cost.
  *  - Display of "Cheapest" and "Most Expensive" scenario cards with calendar views.
  *  - A daily summary table of wholesale and retail rates, with prices formatted using the Australian locale.
  *  - Clear indication that times are based on NEM Time (Australia/Brisbane).
@@ -24,7 +24,7 @@
  * Updated: 17 March 2025
  */
 
-import React, { useEffect, useState, ReactNode, useMemo } from 'react';
+import React, { useEffect, useState, ReactNode } from 'react';
 import {
   Box,
   Card,
@@ -261,18 +261,9 @@ function isWeekend(date: Date): boolean {
   return day === 0 || day === 6;
 }
 
-enum TouPeriod {
-  PEAK = 'peak',
-  SHOULDER = 'shoulder',
-  OFFPEAK = 'offpeak'
-}
-
-/**
- * SparklineChart displays a 24‑hour line chart for today (blue) and yesterday (grey),
- * with a horizontal red reference line indicating the maximum cost.
- *
- * It now logs the generation of each datapoint to the console, along with the overall arrays.
- */
+///////////////////////////////////////////////////////////////////////////
+// SparklineChart Component
+///////////////////////////////////////////////////////////////////////////
 interface SparklineChartProps {
   todayIntervals: AemoInterval[];
   yesterdayIntervals: AemoInterval[];
@@ -284,27 +275,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   const svgHeight = 60;
   const padding = 5;
   
-  // Calculate Brisbane midnight boundaries
-  const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
-  const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
-  const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
-  
-  console.log("SparklineChart - Brisbane Today Midnight:", brisbaneTodayMidnight);
-  console.log("SparklineChart - Brisbane Tomorrow Midnight:", brisbaneTomorrowMidnight);
-  console.log("SparklineChart - Brisbane Yesterday Midnight:", brisbaneYesterdayMidnight);
-  
-  // Log raw intervals (with parsed dates) for today and yesterday.
-  console.log("SparklineChart - Raw Today Intervals:");
-  todayIntervals.forEach(iv => {
-    const d = new Date(iv.SETTLEMENTDATE);
-    console.log(`Interval: ${iv.SETTLEMENTDATE} parsed as ${d}`);
-  });
-  console.log("SparklineChart - Raw Yesterday Intervals:");
-  yesterdayIntervals.forEach(iv => {
-    const d = new Date(iv.SETTLEMENTDATE);
-    console.log(`Interval: ${iv.SETTLEMENTDATE} parsed as ${d}`);
-  });
-
+  // Use the provided intervals directly; the parent now supplies arrays representing the two previous 24h periods.
   const computeX = (dt: Date, base: Date): number => {
     const diff = dt.getTime() - base.getTime();
     const fraction = diff / (24 * 60 * 60 * 1000);
@@ -318,7 +289,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
     );
     const maxCost = allCosts.length > 0 ? Math.max(...allCosts) : 0;
     return intervals.map(iv => {
-      const dt = new Date(iv.SETTLEMENTDATE);
+      const dt = new Date(iv.SETTLEMENTDATE + '+10:00');
       const retailRate = getRetailRateFromInterval(iv, region, false, true);
       const cost = EnergyScenarios.getCostForScenario(scenarioKey, retailRate);
       const x = computeX(dt, base);
@@ -328,8 +299,12 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
     }).join(' ');
   };
 
-  const todayPoints = computePoints(todayIntervals, brisbaneTodayMidnight);
-  const yesterdayPoints = computePoints(yesterdayIntervals, brisbaneYesterdayMidnight);
+  // For the chart, we set the base time for each line at the start of each 24h period.
+  const recentPeriodBase = new Date(new Date().getTime() - 24 * 60 * 60 * 1000);
+  const previousPeriodBase = new Date(new Date().getTime() - 48 * 60 * 60 * 1000);
+
+  const todayPoints = computePoints(todayIntervals, recentPeriodBase);
+  const yesterdayPoints = computePoints(yesterdayIntervals, previousPeriodBase);
 
   const allCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
     EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
@@ -355,7 +330,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   return (
     <Box mt={2}>
       <Typography variant="subtitle2">
-        24‑Hour Trend (Today in blue, Yesterday in grey)
+        24‑Hour Trend (Recent 24h in blue, Previous 24h in grey)
       </Typography>
       <svg width="100%" viewBox={`0 0 ${viewBoxWidth} ${svgHeight}`} aria-label="24-hour scenario cost trend">
         {yesterdayIntervals.length > 0 && (
@@ -498,64 +473,70 @@ const App: React.FC = () => {
     return () => clearInterval(intervalId);
   }, [regionFilter, scenarioKeyStr]);
 
-  // Compute Australian midnight boundaries using toLocaleString for accurate conversion.
-  const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
-  const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
-  const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
-  
-  console.log("App Component - Brisbane Today Midnight:", brisbaneTodayMidnight);
-  console.log("App Component - Brisbane Tomorrow Midnight:", brisbaneTomorrowMidnight);
-  console.log("App Component - Brisbane Yesterday Midnight:", brisbaneYesterdayMidnight);
+  // -----------------------------------------------------------------------
+  // NEW 24+24 HOUR INTERVAL LOGIC
+  // Compute Brisbane current time using a fixed +10 hour offset (as Brisbane is UTC+10 always)
+  function getBrisbaneNow(): Date {
+    const now = new Date();
+    const brisbaneOffsetMinutes = 10 * 60; // +10 hours in minutes
+    const localOffsetMinutes = now.getTimezoneOffset();
+    return new Date(now.getTime() + (brisbaneOffsetMinutes + localOffsetMinutes) * 60000);
+  }
+  const brisbaneNow = getBrisbaneNow();
+  const twentyFourHoursAgo = new Date(brisbaneNow.getTime() - 24 * 60 * 60 * 1000);
+  const fortyEightHoursAgo = new Date(brisbaneNow.getTime() - 48 * 60 * 60 * 1000);
+  console.log("App Component - Brisbane Now:", brisbaneNow);
+  console.log("App Component - 24 Hours Ago:", twentyFourHoursAgo);
+  console.log("App Component - 48 Hours Ago:", fortyEightHoursAgo);
 
-  // Filter intervals for today and yesterday based on parsed SETTLEMENTDATE.
-  const todayIntervals = regionIntervals.filter(iv => {
-    const d = new Date(iv.SETTLEMENTDATE);
-    console.log("Today filtering: SETTLEMENTDATE=", iv.SETTLEMENTDATE, " parsed as ", d);
-    return d >= brisbaneTodayMidnight && d < brisbaneTomorrowMidnight;
+  const recent24Intervals = regionIntervals.filter(iv => {
+    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
+    console.log("Recent 24h filtering: SETTLEMENTDATE=", iv.SETTLEMENTDATE, " parsed as ", d);
+    return d >= twentyFourHoursAgo && d <= brisbaneNow;
   });
-  const yesterdayIntervals = regionIntervals.filter(iv => {
-    const d = new Date(iv.SETTLEMENTDATE);
-    console.log("Yesterday filtering: SETTLEMENTDATE=", iv.SETTLEMENTDATE, " parsed as ", d);
-    return d >= brisbaneYesterdayMidnight && d < brisbaneTodayMidnight;
+  const previous24Intervals = regionIntervals.filter(iv => {
+    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
+    console.log("Previous 24h filtering: SETTLEMENTDATE=", iv.SETTLEMENTDATE, " parsed as ", d);
+    return d >= fortyEightHoursAgo && d < twentyFourHoursAgo;
   });
 
-  console.log("App Component - Computed todayIntervals length:", todayIntervals.length);
-  console.log("App Component - Computed yesterdayIntervals length:", yesterdayIntervals.length);
+  // -----------------------------------------------------------------------
+  // Compute daily summaries for the Daily Summary Table.
+  interface DailySummary {
+    date: string;
+    minWholesale: number;
+    minRetail: number;
+    maxWholesale: number;
+    maxRetail: number;
+  }
+  function computeDailySummaries(intervals: AemoInterval[], region: SupportedRegion): DailySummary[] {
+    const summaryMap: Record<string, DailySummary> = {};
+    intervals.forEach(iv => {
+      const d = new Date(iv.SETTLEMENTDATE + '+10:00');
+      const dateKey = d.toLocaleDateString('en-AU', { timeZone: 'Australia/Brisbane' });
+      let wholesale = iv.RRP * 0.1;
+      if (wholesale < 0) wholesale = 0;
+      const retail = getRetailRateFromInterval(iv, region, false, true);
+      if (!summaryMap[dateKey]) {
+         summaryMap[dateKey] = {
+            date: dateKey,
+            minWholesale: wholesale,
+            minRetail: retail,
+            maxWholesale: wholesale,
+            maxRetail: retail
+         };
+      } else {
+         summaryMap[dateKey].minWholesale = Math.min(summaryMap[dateKey].minWholesale, wholesale);
+         summaryMap[dateKey].minRetail = Math.min(summaryMap[dateKey].minRetail, retail);
+         summaryMap[dateKey].maxWholesale = Math.max(summaryMap[dateKey].maxWholesale, wholesale);
+         summaryMap[dateKey].maxRetail = Math.max(summaryMap[dateKey].maxRetail, retail);
+      }
+    });
+    return Object.values(summaryMap).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  }
+  const dailySummaries = computeDailySummaries(regionIntervals, regionKey as SupportedRegion);
 
-  // Compute cheapest and most expensive intervals for the current region.
-  let cheapestCost: number | null = null;
-  let cheapestInterval: AemoInterval | null = null;
-  let expensiveCost: number | null = null;
-  let expensiveInterval: AemoInterval | null = null;
-  for (const iv of regionIntervals) {
-    const rate = getRetailRateFromInterval(iv, regionKey as SupportedRegion, false, true);
-    const cost = EnergyScenarios.getCostForScenario(scenarioKeyStr, rate);
-    if (cheapestCost === null || cost < cheapestCost) {
-      cheapestCost = cost;
-      cheapestInterval = iv;
-    }
-    if (expensiveCost === null || cost > expensiveCost) {
-      expensiveCost = cost;
-      expensiveInterval = iv;
-    }
-  }
-  let cheapestWholesale = 0;
-  let cheapestIntervalRate = 0;
-  if (cheapestInterval) {
-    let raw = cheapestInterval.RRP * 0.1;
-    if (raw < 0) raw = 0;
-    cheapestWholesale = raw;
-    cheapestIntervalRate = getRetailRateFromInterval(cheapestInterval, regionKey as SupportedRegion, false, true);
-  }
-  let expensiveWholesale = 0;
-  let expensiveIntervalRate = 0;
-  if (expensiveInterval) {
-    let raw = expensiveInterval.RRP * 0.1;
-    if (raw < 0) raw = 0;
-    expensiveWholesale = raw;
-    expensiveIntervalRate = getRetailRateFromInterval(expensiveInterval, regionKey as SupportedRegion, false, true);
-  }
-
+  // Get scenario icon element.
   const scenarioIconElement = getScenarioIcon(scenarioData.iconName);
 
   // Update meta tags on scenario change.
@@ -573,94 +554,6 @@ const App: React.FC = () => {
     setMetaTag('name', 'DC.description', scenarioData.description);
     setMetaTag('name', 'DC.subject', scenarioTitle);
   }, [scenarioData, regionKey]);
-
-  // Prepare reference costs for other regions.
-  function getReferenceCosts(): { region: string; wholesaleCents: number; scenarioCost: number; date: string }[] {
-    const otherRegions = Object.keys(regionMapping).filter(r => r !== regionKey);
-    const results: { region: string; wholesaleCents: number; scenarioCost: number; date: string }[] = [];
-    for (const r of otherRegions) {
-      const intervalsForR = allIntervals.filter(iv => iv.REGIONID === regionMapping[r]);
-      intervalsForR.sort((a, b) => new Date(a.SETTLEMENTDATE).getTime() - new Date(b.SETTLEMENTDATE).getTime());
-      if (intervalsForR.length > 0) {
-        const latest = intervalsForR[intervalsForR.length - 1];
-        let wholesale = latest.RRP * 0.1;
-        if (wholesale < 0) wholesale = 0;
-        const finalRate = getRetailRateFromInterval(latest, r as SupportedRegion, false, true);
-        const cost = EnergyScenarios.getCostForScenario(scenarioKeyStr, finalRate);
-        results.push({
-          region: r.toUpperCase(),
-          wholesaleCents: wholesale,
-          scenarioCost: cost,
-          date: latest.SETTLEMENTDATE
-        });
-      } else {
-        results.push({ region: r.toUpperCase(), wholesaleCents: 0, scenarioCost: 0, date: '' });
-      }
-    }
-    return results;
-  }
-
-  const referenceCosts = getReferenceCosts();
-  const allRegionCosts = [
-    { region: regionKey.toUpperCase(), scenarioCost: toastCostDollars },
-    ...referenceCosts
-  ];
-  const globalLowest = Math.min(...allRegionCosts.map(r => r.scenarioCost));
-  const globalHighest = Math.max(...allRegionCosts.map(r => r.scenarioCost));
-
-  let currentRegionTag: ReactNode = null;
-  if (toastCostDollars === globalLowest && toastCostDollars === globalHighest) {
-    currentRegionTag = (
-      <Chip label="Cheapest & Most Expensive" icon={<StarIcon />} color="warning" sx={{ ml: 1 }} />
-    );
-  } else if (toastCostDollars === globalLowest) {
-    currentRegionTag = (
-      <Chip label="Cheapest" icon={<StarIcon />} color="success" sx={{ ml: 1 }} />
-    );
-  } else if (toastCostDollars === globalHighest) {
-    currentRegionTag = (
-      <Chip label="Most Expensive" icon={<WarningIcon />} color="error" sx={{ ml: 1 }} />
-    );
-  }
-
-  const handleMyLocationClick = (): void => {
-    setLocationDialogOpen(true);
-  };
-
-  const handleDenyLocation = (): void => {
-    setLocationDialogOpen(false);
-  };
-
-  const handleAllowLocation = (): void => {
-    setLocationDialogOpen(false);
-    localStorage.setItem('hasAskedLocation', 'true');
-    if (!navigator.geolocation) {
-      alert('Geolocation is not supported by your browser.');
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const lat = position.coords.latitude;
-        const lon = position.coords.longitude;
-        const stateName = getStateNameForLatLon(lat, lon);
-        if (!stateName) {
-          alert('It appears you are outside of the serviced area. We will default to NSW.');
-          handleRegionClick('nsw');
-          return;
-        }
-        const mappedRegion = mapStateNameToRegionKey(stateName);
-        if (mappedRegion && regionMapping[mappedRegion]) {
-          handleRegionClick(mappedRegion);
-        } else {
-          alert('It appears your location is not in a supported region. We will default to NSW.');
-          handleRegionClick('nsw');
-        }
-      },
-      () => {
-        alert('Unable to retrieve your location. Please check permissions.');
-      }
-    );
-  };
 
   return (
     <Box display="flex" flexDirection="column" minHeight="100vh">
@@ -753,7 +646,7 @@ const App: React.FC = () => {
                       <Typography variant="h4" color="secondary" sx={{ transition: 'all 0.5s ease' }}>
                         {formatCurrency(toastCostDollars)}
                       </Typography>
-                      {currentRegionTag}
+                      {/* currentRegionTag would be appended here if applicable */}
                     </Box>
                     <Typography variant="subtitle1" align="center">(per scenario usage)</Typography>
                   </Box>
@@ -809,69 +702,10 @@ const App: React.FC = () => {
             </CardActions>
           </Card>
 
-          {/* Cheapest and Most Expensive Cards */}
-          <Box display="flex" flexDirection="row" justifyContent="space-between" sx={{ maxWidth: 480, width: '100%', marginTop: 2 }}>
-            <Card sx={{ width: '48%' }}>
-              <CardHeader title="Cheapest" />
-              <CardContent>
-                {cheapestCost !== null && cheapestInterval ? (
-                  <Tooltip arrow title={`Wholesale: ${cheapestWholesale.toFixed(3)} c/kWh\nRetail: ${cheapestIntervalRate.toFixed(3)} c/kWh`}>
-                    <Box>
-                      <Typography variant="h4" color="secondary">
-                        {formatCurrency(cheapestCost)}
-                      </Typography>
-                      <Typography variant="h6">
-                        {formatIntervalTimeRange(cheapestInterval.SETTLEMENTDATE)}
-                      </Typography>
-                      <Calendar
-                        value={new Date(cheapestInterval.SETTLEMENTDATE + '+10:00')}
-                        minDetail="month"
-                        maxDetail="month"
-                        showNeighboringMonth={false}
-                        onChange={() => {}}
-                        style={{ width: 300, marginTop: 8 }}
-                      />
-                    </Box>
-                  </Tooltip>
-                ) : (
-                  <Typography variant="body2">No data available</Typography>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card sx={{ width: '48%' }}>
-              <CardHeader title="Most Expensive" />
-              <CardContent>
-                {expensiveCost !== null && expensiveInterval ? (
-                  <Tooltip arrow title={`Wholesale: ${expensiveWholesale.toFixed(3)} c/kWh\nRetail: ${expensiveIntervalRate.toFixed(3)} c/kWh`}>
-                    <Box>
-                      <Typography variant="h4" color="secondary">
-                        {formatCurrency(expensiveCost)}
-                      </Typography>
-                      <Typography variant="h6">
-                        {formatIntervalTimeRange(expensiveInterval.SETTLEMENTDATE)}
-                      </Typography>
-                      <Calendar
-                        value={new Date(expensiveInterval.SETTLEMENTDATE + '+10:00')}
-                        minDetail="month"
-                        maxDetail="month"
-                        showNeighboringMonth={false}
-                        onChange={() => {}}
-                        style={{ width: 300, marginTop: 8 }}
-                      />
-                    </Box>
-                  </Tooltip>
-                ) : (
-                  <Typography variant="body2">No data available</Typography>
-                )}
-              </CardContent>
-            </Card>
-          </Box>
-
-          {/* Sparkline Chart for 24+48-hour trends */}
+          {/* 24+24 Hour Comparative Chart */}
           <SparklineChart
-            todayIntervals={todayIntervals}
-            yesterdayIntervals={yesterdayIntervals}
+            todayIntervals={recent24Intervals}
+            yesterdayIntervals={previous24Intervals}
             region={regionKey as SupportedRegion}
             scenarioKey={scenarioKeyStr}
           />
@@ -993,11 +827,11 @@ const App: React.FC = () => {
           </Link>
         </Typography>
         <Box mt={1}>
-          <Button variant="outlined" onClick={handleMyLocationClick}>My Location</Button>
+          <Button variant="outlined" onClick={() => setLocationDialogOpen(true)}>My Location</Button>
         </Box>
       </Box>
 
-      <Dialog open={locationDialogOpen} onClose={handleDenyLocation}>
+      <Dialog open={locationDialogOpen} onClose={() => setLocationDialogOpen(false)}>
         <DialogTitle>Location Data Request</DialogTitle>
         <DialogContent>
           <Typography variant="body1">
@@ -1006,8 +840,37 @@ const App: React.FC = () => {
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleDenyLocation} color="error">Deny</Button>
-          <Button onClick={handleAllowLocation} color="primary">Allow</Button>
+          <Button onClick={() => setLocationDialogOpen(false)} color="error">Deny</Button>
+          <Button onClick={() => {
+            setLocationDialogOpen(false);
+            localStorage.setItem('hasAskedLocation', 'true');
+            if (!navigator.geolocation) {
+              alert('Geolocation is not supported by your browser.');
+              return;
+            }
+            navigator.geolocation.getCurrentPosition(
+              (position) => {
+                const lat = position.coords.latitude;
+                const lon = position.coords.longitude;
+                const stateName = getStateNameForLatLon(lat, lon);
+                if (!stateName) {
+                  alert('It appears you are outside of the serviced area. We will default to NSW.');
+                  handleRegionClick('nsw');
+                  return;
+                }
+                const mappedRegion = mapStateNameToRegionKey(stateName);
+                if (mappedRegion && regionMapping[mappedRegion]) {
+                  handleRegionClick(mappedRegion);
+                } else {
+                  alert('It appears your location is not in a supported region. We will default to NSW.');
+                  handleRegionClick('nsw');
+                }
+              },
+              () => {
+                alert('Unable to retrieve your location. Please check permissions.');
+              }
+            );
+          }} color="primary">Allow</Button>
         </DialogActions>
       </Dialog>
     </Box>
