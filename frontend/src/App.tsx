@@ -1,36 +1,30 @@
-/**
- * @fileoverview App.tsx - A simple React application that retrieves the current AEMO
- * network price for a selected region and computes an approximate cost for a chosen
- * energy scenario (toast, EV charge, phone charge, etc.).
- *
- * Uses MUI for a basic design and iconography. Polls the AEMO "5MIN" endpoint
- * every five minutes to retrieve the latest wholesale cost.
- *
- * Automatically determines region (NSW, QLD, SA, TAS, VIC) based on the path:
- *   hostname/nsw, hostname/qld, hostname/sa, hostname/tas, hostname/vic.
- * When requesting the root of the site, automatically redirects to /nsw.
- *
- * Also determines the scenario via:
- *   1) Subdomain (e.g., "toast.coststhismuch.au" => toast), or
- *   2) Query string (e.g., "?s=toast"), falling back to default scenario "toast" if not provided.
- *
- * Voluntary Location Feature:
- *   A "My Location" link is included in the footer that allows the user to share their
- *   geolocation. This is only done if the user explicitly opts in via a popup div.
- *   Once approved, the app attempts to find what state they are in by referencing
- *   au-states.json. If outside the supported states (NSW, QLD, SA, TAS, VIC),
- *   the user is informed and directed to NSW by default.
- *   Their location preference is stored in localStorage to avoid repeat prompts.
- *
- * Author: Troy Kelly <troy@troykelly.com>
- * Original Date: 16 March 2025
- *
- * Usage Example:
- *   1. Run "yarn dev" from the frontend folder.
- *   2. Navigate to the displayed local development URL (e.g., /nsw?s=toast).
- *   3. Observe the price calculations updating every five minutes.
- */
-
+//******************************************************************************
+// * @fileoverview App.tsx - A simple React application that retrieves the current AEMO
+// * network price for a selected region and computes an approximate cost for a chosen
+// * energy scenario (toast, EV charge, phone charge, etc.).
+// *
+// * Uses MUI for a basic design and iconography. Polls the AEMO "5MIN" endpoint
+// * every five minutes to retrieve the latest wholesale cost.
+// *
+// * Automatically determines region (NSW, QLD, SA, TAS, VIC) based on the path:
+// *   hostname/nsw, hostname/qld, hostname/sa, hostname/tas, hostname/vic.
+// * When requesting the root of the site, automatically redirects to /nsw.
+// *
+// * Also determines the scenario via:
+// *   1) Subdomain (e.g., "toast.coststhismuch.au" => toast), or
+// *   2) Query string (e.g., "?s=toast"), falling back to default scenario "toast" if not provided.
+// *
+// * Voluntary Location Feature:
+// *   A "My Location" link is included in the footer that allows the user to share their
+// *   geolocation. This is only done if the user explicitly opts in via a popup div.
+// *   Once approved, the app attempts to find what state they are in by referencing
+// *   au-states.json. If outside the supported states (NSW, QLD, SA, TAS, VIC),
+// *   the user is informed and directed to NSW by default.
+// *   Their location preference is stored in localStorage to avoid repeat prompts.
+// *
+// * Author: Troy Kelly <troy@troykelly.com>
+// * Original Date: 16 March 2025
+// ******************************************************************************
 import React, { useEffect, useState, ReactNode } from 'react';
 import {
   Box,
@@ -90,12 +84,9 @@ import { EnergyScenarios } from './energyScenarios';
 // Importing AU states GeoJSON
 import statesData from '../data/au-states.json';
 
-/**
- * AEMO response for 5-minute data.
- */
-interface AemoResponse {
-  '5MIN': AemoInterval[];
-}
+// Import react-calendar and its styles
+import Calendar from 'react-calendar';
+import 'react-calendar/dist/Calendar.css';
 
 /**
  * Formats a date string (ISO8601) into a more readable local string,
@@ -119,6 +110,28 @@ function formatIntervalDate(dateString: string): string {
     hour12: false
   };
   return date.toLocaleString('en-AU', options) + ' (NEM Time)';
+}
+
+/**
+ * Formats a given interval’s start time into a time range.
+ * Since each AEMO interval is 5 minutes long, returns "HH:MM -> HH:MM".
+ *
+ * @param {string} dateString The ISO8601 settlement date/time string.
+ * @return {string} The time range as "start -> end" formatted in 24hr clock.
+ */
+function formatIntervalTimeRange(dateString: string): string {
+  if (!dateString) return '';
+  const startDate = new Date(dateString + '+10:00');
+  const endDate = new Date(startDate.getTime() + 5 * 60 * 1000);
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone: 'Australia/Brisbane',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  };
+  const startTime = startDate.toLocaleTimeString('en-AU', options);
+  const endTime = endDate.toLocaleTimeString('en-AU', options);
+  return `${startTime} -> ${endTime}`;
 }
 
 /**
@@ -266,15 +279,11 @@ function getStateNameForLatLon(lat: number, lon: number): string | null {
   for (const feature of statesData.features) {
     const geometry = feature.geometry;
     if (geometry.type === 'Polygon') {
-      // Single polygon
       const coords = geometry.coordinates;
-      // coords is an array of rings, with coords[0] being the outer border
-      // Each ring is an array of [lon, lat] pairs.
       if (isPointInRingArray(coords, lat, lon)) {
         return feature.properties.STATE_NAME;
       }
     } else if (geometry.type === 'MultiPolygon') {
-      // Multiple polygons
       for (const polygon of geometry.coordinates) {
         if (isPointInRingArray(polygon, lat, lon)) {
           return feature.properties.STATE_NAME;
@@ -293,11 +302,7 @@ function getStateNameForLatLon(lat: number, lon: number): string | null {
  * @return {boolean} True if the point is inside, otherwise false.
  */
 function isPointInRingArray(ringArray: number[][][], lat: number, lon: number): boolean {
-  // ringArray is something like: [ [ [lon,lat],[lon,lat],...], [Hole ring], ... ]
-  // Only the outer ring is needed for a simple point-in-polygon check
-  // We'll assume no holes or treat them as is. Typically the first ring is the outer boundary.
   if (ringArray.length === 0) return false;
-  // We'll just test if inside the outer ring
   const outerRing = ringArray[0];
   return isPointInPolygon(outerRing, lat, lon);
 }
@@ -316,7 +321,6 @@ function mapStateNameToRegionKey(stateName: string): string | null {
   if (lowerName.includes('queensland')) return 'qld';
   if (lowerName.includes('south australia')) return 'sa';
   if (lowerName.includes('tasmania')) return 'tas';
-  // WA, NT, ACT, or unknown => not supported => null
   return null;
 }
 
@@ -324,22 +328,13 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [rrpCentsPerKWh, setRrpCentsPerKWh] = useState<number>(0);
   const [finalRateCents, setFinalRateCents] = useState<number>(0);
-
-  // Keep the original variable name "toastCostDollars" but it represents
-  // the cost for whichever scenario is chosen
   const [toastCostDollars, setToastCostDollars] = useState<number>(0);
   const [usedIntervalDate, setUsedIntervalDate] = useState<string>('');
-
-  // Store all intervals for up to the last 24 hours statistic
+  // Store all intervals for the current region from the API (all data, not just last 24 hours)
   const [regionIntervals, setRegionIntervals] = useState<AemoInterval[]>([]);
-
   // Store all intervals for all regions, used for reference table (now grid)
   const [allIntervals, setAllIntervals] = useState<AemoInterval[]>([]);
-
-  // State control for the hamburger (drawer) menu
   const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
-
-  // State for location consent dialog
   const [locationDialogOpen, setLocationDialogOpen] = useState<boolean>(false);
 
   /**
@@ -387,7 +382,6 @@ const App: React.FC = () => {
     let finalUrl = '';
 
     if (isLocalDev) {
-      // Retain host:port, use region path + query param
       finalUrl =
         protocol + '//' + hostname + (port ? ':' + port : '') + '/' + regionPath + '?s=' + newScenario;
     } else {
@@ -422,16 +416,13 @@ const App: React.FC = () => {
       hostname === '127.0.0.1' ||
       hostname.includes('192.168.');
 
-    // We'll keep the existing scenario
     const scenario = getScenarioKey();
     let finalUrl = '';
 
     if (isLocalDev) {
-      // In dev mode, scenario is query param, region is path
       finalUrl =
         protocol + '//' + hostname + (port ? ':' + port : '') + '/' + newRegion + '?s=' + scenario;
     } else {
-      // In production, scenario is subdomain, region is path
       const domainParts = hostname.split('.');
       if (domainParts.length <= 1) {
         finalUrl =
@@ -455,7 +446,7 @@ const App: React.FC = () => {
   // Scenario from subdomain or query param
   const scenarioKey = getScenarioKey().trim();
 
-  // 2. Redirect to default scenario if user lands with no scenario provided.
+  // Redirect to default scenario if scenario not provided.
   if (!scenarioKey) {
     handleScenarioChange('toast');
     return null;
@@ -463,15 +454,14 @@ const App: React.FC = () => {
 
   const scenarioData = EnergyScenarios.getScenarioById(scenarioKey);
 
-  // If scenario not found, show 404
+  // Show 404 if scenario not found.
   if (!scenarioData) {
     return <ScenarioNotFound scenarioKey={scenarioKey} />;
   }
 
   /**
    * Fetches the current 5-minute AEMO data, filters for the selected region,
-   * and updates state. Negative RRP is floored to zero. Also includes a
-   * demonstration of how final retail rate and approximate usage scenario cost is derived.
+   * and updates state.
    */
   const fetchAemoData = async (): Promise<void> => {
     try {
@@ -486,9 +476,9 @@ const App: React.FC = () => {
       if (!response.ok) {
         throw new Error(`Network response was not OK. Status: ${response.status}`);
       }
-      const data: AemoResponse = await response.json();
+      const data: { '5MIN': AemoInterval[] } = await response.json();
 
-      // Keep all intervals for reference
+      // Store all intervals for reference and region filtering.
       setAllIntervals(data['5MIN']);
 
       const regionData: AemoInterval[] = data['5MIN'].filter(
@@ -521,11 +511,9 @@ const App: React.FC = () => {
         );
         setFinalRateCents(computedRate);
 
-        // Approximate cost for the chosen scenario
         const scenarioCost = EnergyScenarios.getCostForScenario(scenarioKey, computedRate);
         setToastCostDollars(scenarioCost);
 
-        // Record the date/time used for display
         setUsedIntervalDate(latest.SETTLEMENTDATE);
       } else {
         setRrpCentsPerKWh(0);
@@ -533,7 +521,7 @@ const App: React.FC = () => {
         setToastCostDollars(0);
       }
 
-      // Store all region data for last 24-hour calculations
+      // Instead of restricting to the last 24 hours, we now store all available intervals
       setRegionIntervals(regionData);
     } catch (err) {
       setRrpCentsPerKWh(0);
@@ -554,19 +542,15 @@ const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Compute cheapest and most expensive cost in the last 24 hours for the current region
-  const now = new Date();
-  const intervalsInLast24Hours = regionIntervals.filter((interval) => {
-    const intervalDate = new Date(interval.SETTLEMENTDATE + '+10:00');
-    return now.getTime() - intervalDate.getTime() <= 24 * 60 * 60 * 1000;
-  });
+  // Instead of last 24 hours, use all intervals for current region
+  const intervalsToConsider = regionIntervals;
 
   let cheapestCost: number | null = null;
   let cheapestInterval: AemoInterval | null = null;
   let expensiveCost: number | null = null;
   let expensiveInterval: AemoInterval | null = null;
 
-  for (const interval of intervalsInLast24Hours) {
+  for (const interval of intervalsToConsider) {
     const intervalRate = getRetailRateFromInterval(
       interval,
       regionKey as SupportedRegion,
@@ -585,7 +569,7 @@ const App: React.FC = () => {
     }
   }
 
-  // Precompute wholesale & retail rates for tooltips
+  // Precompute wholesale & retail rates for tooltips (if data available)
   let cheapestWholesaleCents = 0;
   let cheapestIntervalRate = 0;
   if (cheapestInterval) {
@@ -638,7 +622,7 @@ const App: React.FC = () => {
   }, [scenarioData, regionKey]);
 
   /**
-   * Prepares reference costs for other regions (i.e., AEMO regions other than the current one).
+   * Prepares reference costs for other regions.
    *
    * @return {Array} An array of objects, each containing the region name,
    * wholesale cents/kWh, scenario cost, and the relevant interval date.
@@ -693,7 +677,7 @@ const App: React.FC = () => {
 
   const referenceCosts = getReferenceCosts();
 
-  // Combine the current region's cost plus reference region costs
+  // Combine the current region's cost plus reference region costs.
   const allRegionCosts = [
     {
       region: regionKey.toUpperCase(),
@@ -705,7 +689,7 @@ const App: React.FC = () => {
   const lowestCost = Math.min(...allRegionCosts.map((r) => r.scenarioCost));
   const highestCost = Math.max(...allRegionCosts.map((r) => r.scenarioCost));
 
-  // Determine if current region is cheapest or most expensive
+  // Determine if current region is cheapest or most expensive.
   let currentRegionTag: ReactNode = null;
   if (toastCostDollars === lowestCost && toastCostDollars === highestCost) {
     currentRegionTag = (
@@ -751,14 +735,11 @@ const App: React.FC = () => {
   };
 
   /**
-   * Called if user allows location sharing in the popup. We then ask
-   * for geolocation through the browser. If successful, we map coordinates
-   * to a region or default to 'nsw' if unsupported.
+   * Called if user allows location sharing in the popup. Requests geolocation,
+   * then maps the coordinates to a state/region.
    */
   const handleAllowLocation = (): void => {
     setLocationDialogOpen(false);
-
-    // We store a marker in localStorage to note we've asked
     localStorage.setItem('hasAskedLocation', 'true');
 
     if (!navigator.geolocation) {
@@ -780,7 +761,6 @@ const App: React.FC = () => {
 
         const mappedRegion = mapStateNameToRegionKey(stateName);
         if (mappedRegion && regionMapping[mappedRegion]) {
-          // We have a supported region
           handleRegionClick(mappedRegion);
         } else {
           alert('It appears your location is not in a supported region. We will default to NSW.');
@@ -819,7 +799,6 @@ const App: React.FC = () => {
           onKeyDown={toggleDrawer(false)}
         >
           <List>
-            {/* 3. Home link goes to the 'toast' scenario for the current region */}
             <ListItem button onClick={() => handleScenarioChange('toast')}>
               <ListItemIcon>
                 <BreakfastDiningIcon />
@@ -832,7 +811,6 @@ const App: React.FC = () => {
               </ListItemIcon>
               <ListItemText primary="About" />
             </ListItem>
-            {/* 4. Links to other scenarios in the hamburger menu */}
             {EnergyScenarios.getAllScenarios().map((item) => (
               <ListItem button key={item.id} onClick={() => handleScenarioChange(item.id)}>
                 <ListItemIcon>
@@ -854,7 +832,6 @@ const App: React.FC = () => {
         bgcolor="#fafafa"
       >
         <Box sx={{ marginBottom: 4 }}>
-          {/* Scenario selector above the info card */}
           <Box sx={{ marginBottom: 2 }}>
             <FormControl fullWidth>
               <InputLabel id="scenario-select-label">Select Scenario</InputLabel>
@@ -895,7 +872,7 @@ const App: React.FC = () => {
                     <Box display="flex" alignItems="center" mb={1}>
                       <MonetizationOnIcon fontSize="large" sx={{ marginRight: 1 }} />
                       <Typography variant="h4" color="secondary">
-                        {'$' + toastCostDollars.toFixed(4)}
+                        {'$' + toastCostDollars.toFixed(6)}
                       </Typography>
                       {currentRegionTag}
                     </Box>
@@ -908,7 +885,7 @@ const App: React.FC = () => {
                     Region: {regionFilter}
                   </Typography>
                   <Typography variant="body1" gutterBottom>
-                    {'Current Wholesale Spot Price: ' + rrpCentsPerKWh.toFixed(3) + ' c/kWh '}
+                    {'Current Wholesale Spot Price: ' + rrpCentsPerKWh.toFixed(3)} c/kWh{' '}
                     <Tooltip title="This is the real-time five-minute wholesale electricity price from AEMO. Negative values are floored to 0.">
                       <IconButton size="small">
                         <InfoIcon fontSize="inherit" />
@@ -916,7 +893,7 @@ const App: React.FC = () => {
                     </Tooltip>
                   </Typography>
                   <Typography variant="body1" gutterBottom>
-                    {'Final Price (incl. GST): ' + finalRateCents.toFixed(3) + ' c/kWh '}
+                    {'Final Price (incl. GST): ' + finalRateCents.toFixed(3)} c/kWh{' '}
                     <Tooltip title="This is the approximate retail rate, including wholesale, network, environment, overheads, margin, and GST.">
                       <IconButton size="small">
                         <InfoIcon fontSize="inherit" />
@@ -924,7 +901,6 @@ const App: React.FC = () => {
                     </Tooltip>
                   </Typography>
 
-                  {/* Scenario description and assumptions, if any */}
                   {scenarioDescription && (
                     <Typography variant="body2" sx={{ marginTop: 2 }}>
                       {scenarioDescription}
@@ -961,7 +937,6 @@ const App: React.FC = () => {
             </CardActions>
           </Card>
 
-          {/* Two smaller cards for cheapest and most expensive scenario cost in the last 24 hours */}
           <Box
             display="flex"
             flexDirection="row"
@@ -980,16 +955,24 @@ const App: React.FC = () => {
                     }
                   >
                     <Box>
-                      <Typography variant="body1">
-                        {'$' + cheapestCost.toFixed(4)}
+                      <Typography variant="h4" color="secondary">
+                        {'$' + cheapestCost.toFixed(6)}
                       </Typography>
-                      <Typography variant="caption" display="block">
-                        {formatIntervalDate(cheapestInterval.SETTLEMENTDATE)}
+                      <Typography variant="h6">
+                        {formatIntervalTimeRange(cheapestInterval.SETTLEMENTDATE)}
                       </Typography>
+                      <Calendar
+                        value={new Date(cheapestInterval.SETTLEMENTDATE + '+10:00')}
+                        minDetail="month"
+                        maxDetail="month"
+                        showNeighboringMonth={false}
+                        onChange={() => {}}
+                        style={{ width: 300, marginTop: 8 }}
+                      />
                     </Box>
                   </Tooltip>
                 ) : (
-                  <Typography variant="body2">No data for last 24 hours</Typography>
+                  <Typography variant="body2">No data available</Typography>
                 )}
               </CardContent>
             </Card>
@@ -1006,103 +989,27 @@ const App: React.FC = () => {
                     }
                   >
                     <Box>
-                      <Typography variant="body1">
-                        {'$' + expensiveCost.toFixed(4)}
+                      <Typography variant="h4" color="secondary">
+                        {'$' + expensiveCost.toFixed(6)}
                       </Typography>
-                      <Typography variant="caption" display="block">
-                        {formatIntervalDate(expensiveInterval.SETTLEMENTDATE)}
+                      <Typography variant="h6">
+                        {formatIntervalTimeRange(expensiveInterval.SETTLEMENTDATE)}
                       </Typography>
+                      <Calendar
+                        value={new Date(expensiveInterval.SETTLEMENTDATE + '+10:00')}
+                        minDetail="month"
+                        maxDetail="month"
+                        showNeighboringMonth={false}
+                        onChange={() => {}}
+                        style={{ width: 300, marginTop: 8 }}
+                      />
                     </Box>
                   </Tooltip>
                 ) : (
-                  <Typography variant="body2">No data for last 24 hours</Typography>
+                  <Typography variant="body2">No data available</Typography>
                 )}
               </CardContent>
             </Card>
-          </Box>
-
-          {/* Reference Grid for other AEMO regions */}
-          <Box sx={{ maxWidth: 480, width: '100%', marginTop: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              Reference Costs for Other Regions
-            </Typography>
-            <Grid container spacing={2}>
-              {referenceCosts.map((item) => {
-                const cost = item.scenarioCost;
-                const isMin = cost === lowestCost;
-                const isMax = cost === highestCost;
-
-                const regionLower = item.region.toLowerCase();
-                let regionKeyStr: string = 'nsw';
-                switch (regionLower) {
-                  case 'nsw':
-                    regionKeyStr = 'nsw';
-                    break;
-                  case 'qld':
-                    regionKeyStr = 'qld';
-                    break;
-                  case 'sa':
-                    regionKeyStr = 'sa';
-                    break;
-                  case 'tas':
-                    regionKeyStr = 'tas';
-                    break;
-                  case 'vic':
-                    regionKeyStr = 'vic';
-                    break;
-                  default:
-                    regionKeyStr = 'nsw';
-                }
-
-                let regionTag: ReactNode = null;
-                if (isMin && isMax) {
-                  regionTag = (
-                    <Chip
-                      label="Cheapest & Most Expensive"
-                      icon={<StarIcon />}
-                      color="warning"
-                      size="small"
-                      sx={{ mt: 1 }}
-                    />
-                  );
-                } else if (isMin) {
-                  regionTag = (
-                    <Chip
-                      label="Cheapest"
-                      icon={<StarIcon />}
-                      color="success"
-                      size="small"
-                      sx={{ mt: 1 }}
-                    />
-                  );
-                } else if (isMax) {
-                  regionTag = (
-                    <Chip
-                      label="Most Expensive"
-                      icon={<WarningIcon />}
-                      color="error"
-                      size="small"
-                      sx={{ mt: 1 }}
-                    />
-                  );
-                }
-
-                return (
-                  <Grid item xs={6} sm={4} key={item.region}>
-                    <Card
-                      sx={{ cursor: 'pointer' }}
-                      onClick={() => handleRegionClick(regionKeyStr)}
-                    >
-                      <CardContent>
-                        <Typography variant="h6">{item.region}</Typography>
-                        <Typography variant="body1">{'$' + cost.toFixed(4)}</Typography>
-                        {regionTag}
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                );
-              })}
-            </Grid>
           </Box>
         </Box>
       </Box>
@@ -1149,7 +1056,6 @@ const App: React.FC = () => {
 function AboutPage(props: {drawerOpen: boolean; toggleDrawer: (open: boolean) => () => void;}): JSX.Element {
   const { drawerOpen, toggleDrawer } = props;
 
-  // Dynamically set Dublin Core & OpenGraph metadata for the About page
   useEffect(() => {
     const pageTitle = 'About - Costs This Much';
     const description = 'Learn about how the site calculates electricity costs for everyday tasks.';
