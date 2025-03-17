@@ -400,12 +400,15 @@ function getTimeOfUsePeriodForRegion(date: Date, region: SupportedRegion): TouPe
 }
 
 /**
- * Converts RRP in $/MWh to wholesale cents/kWh (negative values floored to zero).
+ * Given the RRP in $/MWh (which may be negative), floors it to zero
+ * if negative. Converts to cents/kWh by multiplying by 0.1:
+ * - $1/MWh => 0.1 c/kWh
+ * - e.g., RRP= $80 => 80 * 0.1=8 c/kWh
  *
- * @param {number} rrpInDollarsMWh The RRP value.
- * @return {number} The wholesale price in c/kWh.
+ * @param {number} rrpInDollarsMWh RRP in $/MWh
+ * @return {number} Wholesale price in cents/kWh (never negative)
  */
-// (Using computeWholesale helper instead)
+ // (Using computeWholesale helper instead)
 
 ///////////////////////////////////////////////////////////////////////////
 // Main App Component
@@ -991,7 +994,7 @@ const App: React.FC = () => {
             </Grid>
           </Box>
 
-          {/* New: Daily Wholesale and Retail Rates Summary */}
+          {/* New: Daily Wholesale and Retail Rates Summary Table in Dollars */}
           <Box sx={{ maxWidth: 480, width: '100%', marginTop: 2 }}>
             <Typography variant="h6" gutterBottom>
               Daily Wholesale and Retail Rates Summary
@@ -1004,20 +1007,20 @@ const App: React.FC = () => {
                   <TableHead>
                     <TableRow>
                       <TableCell>Date</TableCell>
-                      <TableCell align="right">Cheapest Wholesale (c/kWh)</TableCell>
-                      <TableCell align="right">Cheapest Retail (c/kWh)</TableCell>
-                      <TableCell align="right">Most Expensive Wholesale (c/kWh)</TableCell>
-                      <TableCell align="right">Most Expensive Retail (c/kWh)</TableCell>
+                      <TableCell align="right">Cheapest Wholesale ($/kWh)</TableCell>
+                      <TableCell align="right">Cheapest Retail ($/kWh)</TableCell>
+                      <TableCell align="right">Most Expensive Wholesale ($/kWh)</TableCell>
+                      <TableCell align="right">Most Expensive Retail ($/kWh)</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {dailySummaries.map((row) => (
                       <TableRow key={row.date}>
                         <TableCell component="th" scope="row">{row.date}</TableCell>
-                        <TableCell align="right">{row.minWholesale.toFixed(3)}</TableCell>
-                        <TableCell align="right">{row.minRetail.toFixed(3)}</TableCell>
-                        <TableCell align="right">{row.maxWholesale.toFixed(3)}</TableCell>
-                        <TableCell align="right">{row.maxRetail.toFixed(3)}</TableCell>
+                        <TableCell align="right">{(row.minWholesale / 100).toFixed(2)}</TableCell>
+                        <TableCell align="right">{(row.minRetail / 100).toFixed(2)}</TableCell>
+                        <TableCell align="right">{(row.maxWholesale / 100).toFixed(2)}</TableCell>
+                        <TableCell align="right">{(row.maxRetail / 100).toFixed(2)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
