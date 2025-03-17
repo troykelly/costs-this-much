@@ -4,6 +4,10 @@ This repository helps illustrate the dynamic nature of electricity pricing in th
 
 I built this to demystify the complexities of electricity tariff structures and to show the impacts on your everyday usage. Since wholesale prices can sometimes swing dramatically (including going negative), seeing the effect on something as simple as boiling your kettle is both educational and eye-opening.
 
+## Live Site
+
+[https://toast.coststhismuch.au/nsw](https://toast.coststhismuch.au/nsw)
+
 --------------------------------------------------------------------------------
 
 ## Status
