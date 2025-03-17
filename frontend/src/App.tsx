@@ -323,129 +323,6 @@ function getTimeOfUsePeriodForRegion(date: Date, region: SupportedRegion): TouPe
   }
 }
 
-/**
- * Represents one entry of the 5-minute data set returned by the AEMO endpoint.
- */
-export interface AemoInterval {
-  SETTLEMENTDATE: string;
-  REGIONID: string;
-  RRP: number;
-}
-
-/**
- * Calculates the approximate retail rate (in cents/kWh) for one interval.
- */
-export function getRetailRateFromInterval(
-  interval: AemoInterval,
-  region: SupportedRegion,
-  isBusiness: boolean = false,
-  includeGst: boolean = true
-): number {
-  const intervalDate = new Date(interval.SETTLEMENTDATE);
-  const timeOfUse = getTimeOfUsePeriodForRegion(intervalDate, region);
-  const wholesaleCents = interval.RRP * 0.1 < 0 ? 0 : interval.RRP * 0.1;
-  const regionConfig = {
-    nsw: { peakNetworkCents: 12.0, shoulderNetworkCents: 7.0, offpeakNetworkCents: 3.7, envCents: 3.0, retailOpsCents: 2.0, marginCents: 2.0, businessSurchargeCents: 1.0 },
-    qld: { peakNetworkCents: 11.0, shoulderNetworkCents: 6.0, offpeakNetworkCents: 3.3, envCents: 2.5, retailOpsCents: 2.0, marginCents: 1.5, businessSurchargeCents: 1.0 },
-    vic: { peakNetworkCents: 10.0, shoulderNetworkCents: 6.0, offpeakNetworkCents: 3.0, envCents: 2.0, retailOpsCents: 2.5, marginCents: 1.5, businessSurchargeCents: 1.0 },
-    sa:  { peakNetworkCents: 20.0, shoulderNetworkCents: 12.0, offpeakNetworkCents: 8.0, envCents: 1.5, retailOpsCents: 2.5, marginCents: 2.0, businessSurchargeCents: 1.5 },
-    tas: { peakNetworkCents: 14.0, shoulderNetworkCents: 10.0, offpeakNetworkCents: 5.0, envCents: 1.0, retailOpsCents: 2.0, marginCents: 1.0, businessSurchargeCents: 1.0 }
-  }[region];
-
-  let networkCents: number;
-  switch (timeOfUse) {
-    case TouPeriod.PEAK:
-      networkCents = regionConfig.peakNetworkCents;
-      break;
-    case TouPeriod.SHOULDER:
-      networkCents = regionConfig.shoulderNetworkCents;
-      break;
-    case TouPeriod.OFFPEAK:
-    default:
-      networkCents = regionConfig.offpeakNetworkCents;
-      break;
-  }
-
-  let rateExGst =
-    wholesaleCents +
-    networkCents +
-    regionConfig.envCents +
-    regionConfig.retailOpsCents +
-    regionConfig.marginCents;
-
-  if (isBusiness && regionConfig.businessSurchargeCents) {
-    rateExGst += regionConfig.businessSurchargeCents;
-  }
-
-  return includeGst ? rateExGst * 1.1 : rateExGst;
-}
-
-/**
- * SparklineChart displays a 24‑hour line chart for today (blue) and yesterday (grey),
- * with a horizontal red reference line indicating the maximum cost.
- */
-interface SparklineChartProps {
-  todayIntervals: AemoInterval[];
-  yesterdayIntervals: AemoInterval[];
-  region: SupportedRegion;
-}
-const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterdayIntervals, region }) => {
-  const viewBoxWidth = 500;
-  const svgHeight = 60;
-  const padding = 5;
-  // Use toLocaleString rather than toLocaleDateString for correct Australia/Brisbane midnight
-  const todayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
-  const yesterdayMidnight = new Date(todayMidnight.getTime() - 24 * 60 * 60 * 1000);
-
-  const computeX = (dt: Date, base: Date): number => {
-    const diff = dt.getTime() - base.getTime();
-    const fraction = diff / (24 * 60 * 60 * 1000);
-    return padding + fraction * (viewBoxWidth - 2 * padding);
-  };
-
-  const computePoints = (intervals: AemoInterval[], base: Date): string => {
-    const allRates = [...todayIntervals, ...yesterdayIntervals].map(iv =>
-      getRetailRateFromInterval(iv, region, false, true)
-    );
-    const maxRate = allRates.length > 0 ? Math.max(...allRates) : 0;
-    return intervals.map(iv => {
-      const dt = new Date(iv.SETTLEMENTDATE + '+10:00');
-      const x = computeX(dt, base);
-      const rate = getRetailRateFromInterval(iv, region, false, true);
-      const y = svgHeight - padding - ((rate / (maxRate || 1)) * (svgHeight - 2 * padding));
-      return `${x},${y}`;
-    }).join(' ');
-  };
-
-  const todayPoints = computePoints(todayIntervals, todayMidnight);
-  const yesterdayPoints = computePoints(yesterdayIntervals, yesterdayMidnight);
-  const allRates = [...todayIntervals, ...yesterdayIntervals].map(iv =>
-    getRetailRateFromInterval(iv, region, false, true)
-  );
-  const maxRate = allRates.length > 0 ? Math.max(...allRates) : 0;
-  const yRef = svgHeight - padding - ((maxRate / (maxRate || 1)) * (svgHeight - 2 * padding));
-
-  return (
-    <Box mt={2}>
-      <Typography variant="subtitle2">
-        24‑Hour Trend (Today in blue, Yesterday in grey)
-      </Typography>
-      <svg width="100%" viewBox={`0 0 ${viewBoxWidth} ${svgHeight}`} aria-label="24-hour retail rate trend">
-        {yesterdayIntervals.length > 0 && (
-          <polyline fill="none" stroke="#888888" strokeWidth="2" points={yesterdayPoints} />
-        )}
-        {todayIntervals.length > 0 && (
-          <polyline fill="none" stroke="#1976d2" strokeWidth="2" points={todayPoints} />
-        )}
-        <line x1={padding} y1={yRef} x2={viewBoxWidth - padding} y2={yRef} stroke="#ff0000" strokeDasharray="4" strokeWidth="1" />
-        <text x={padding + 2} y={yRef - 2} fill="#ff0000" fontSize="10">
-          Max: {maxRate.toFixed(2)} c/kWh
-        </text>
-      </svg>
-    </Box>
-  );
-};
-
 ///////////////////////////////////////////////////////////////////////////
 // Main App Component
 ///////////////////////////////////////////////////////////////////////////
@@ -711,7 +588,7 @@ const App: React.FC = () => {
 
   // Compute Australian midnight boundaries using toLocaleString for accurate conversion.
   const nowTime = new Date();
-  const brisbaneTodayMidnight = new Date(nowTime.toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
+  const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
   const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
   const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
   const todayIntervals = regionIntervals.filter(iv => {
