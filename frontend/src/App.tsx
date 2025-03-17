@@ -279,9 +279,11 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   const viewBoxWidth = 500;
   const svgHeight = 60;
   const padding = 5;
-  // Use toLocaleString rather than toLocaleDateString for correct Australia/Brisbane midnight
-  const todayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
-  const yesterdayMidnight = new Date(todayMidnight.getTime() - 24 * 60 * 60 * 1000);
+  // Use toLocaleString rather than toLocaleDateString for correct Australia/Brisbane midnight.
+  // Changed locale to en-US for proper parsing.
+  const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-US', { timeZone: 'Australia/Brisbane' }));
+  const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
+  const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
 
   const computeX = (dt: Date, base: Date): number => {
     const diff = dt.getTime() - base.getTime();
