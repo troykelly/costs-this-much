@@ -271,8 +271,7 @@ enum TouPeriod {
  * SparklineChart displays a 24‑hour line chart for today (blue) and yesterday (grey),
  * with a horizontal red reference line indicating the maximum cost.
  *
- * Now the chart plots the per five minute cost for the scenario currently selected.
- * The component also debugs the chart data to the console as well formed JSON.
+ * It now logs the generation of each datapoint to the console, along with the overall arrays.
  */
 interface SparklineChartProps {
   todayIntervals: AemoInterval[];
@@ -284,19 +283,19 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   const viewBoxWidth = 500;
   const svgHeight = 60;
   const padding = 5;
-  // Use toLocaleString (en-US) for correct Australia/Brisbane midnight.
+  // Use toLocaleString (en-AU) for correct Australia/Brisbane midnight.
   const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
   const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
   const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
 
-  // Log the intervals arrays for today and yesterday with their computed scenario cost.
-  console.debug("SparklineChart - Today intervals:", todayIntervals.map(iv => ({
+  // Log the raw intervals arrays along with computed scenario costs.
+  console.log("SparklineChart - Today intervals (raw):", todayIntervals.map(iv => ({
     date: iv.SETTLEMENTDATE,
-    retailCost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
+    computedCost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
   })));
-  console.debug("SparklineChart - Yesterday intervals:", yesterdayIntervals.map(iv => ({
+  console.log("SparklineChart - Yesterday intervals (raw):", yesterdayIntervals.map(iv => ({
     date: iv.SETTLEMENTDATE,
-    retailCost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
+    computedCost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
   })));
 
   const computeX = (dt: Date, base: Date): number => {
@@ -306,6 +305,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   };
 
   const computePoints = (intervals: AemoInterval[], base: Date): string => {
+    // Determine the maximum cost across the combined today and yesterday intervals.
     const allCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
       EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
     );
@@ -316,7 +316,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
       const cost = EnergyScenarios.getCostForScenario(scenarioKey, retailRate);
       const x = computeX(dt, base);
       const y = svgHeight - padding - ((cost / (maxCost || 1)) * (svgHeight - 2 * padding));
-      console.debug(`Data point: date=${iv.SETTLEMENTDATE}, retailRate=${retailRate.toFixed(3)} c/kWh, cost=${cost.toFixed(4)} $, x=${x.toFixed(2)}, y=${y.toFixed(2)}`);
+      console.log(`Data point: date=${iv.SETTLEMENTDATE}, retailRate=${retailRate.toFixed(3)} c/kWh, cost=${cost.toFixed(4)} $, x=${x.toFixed(2)}, y=${y.toFixed(2)}`);
       return `${x},${y}`;
     }).join(' ');
   };
@@ -343,7 +343,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
     todayPoints,
     yesterdayPoints
   };
-  console.debug("SparklineChart data:", JSON.stringify(chartData, null, 2));
+  console.log("SparklineChart - Final Chart Data:", JSON.stringify(chartData, null, 2));
 
   return (
     <Box mt={2}>
@@ -643,6 +643,9 @@ const App: React.FC = () => {
     const d = new Date(iv.SETTLEMENTDATE);
     return d >= brisbaneYesterdayMidnight && d < brisbaneTodayMidnight;
   });
+
+  console.log("App Component - Computed todayIntervals length:", todayIntervals.length);
+  console.log("App Component - Computed yesterdayIntervals length:", yesterdayIntervals.length);
 
   // Daily summaries grouped by day.
   const dailySummaries = useMemo(() => {
