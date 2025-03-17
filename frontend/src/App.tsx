@@ -324,6 +324,63 @@ function getTimeOfUsePeriodForRegion(date: Date, region: SupportedRegion): TouPe
 }
 
 /**
+ * Represents one entry of the 5-minute data set returned by the AEMO endpoint.
+ */
+export interface AemoInterval {
+  SETTLEMENTDATE: string;
+  REGIONID: string;
+  RRP: number;
+}
+
+/**
+ * Calculates the approximate retail rate (in cents/kWh) for one interval.
+ */
+export function getRetailRateFromInterval(
+  interval: AemoInterval,
+  region: SupportedRegion,
+  isBusiness: boolean = false,
+  includeGst: boolean = true
+): number {
+  const intervalDate = new Date(interval.SETTLEMENTDATE);
+  const timeOfUse = getTimeOfUsePeriodForRegion(intervalDate, region);
+  const wholesaleCents = interval.RRP * 0.1 < 0 ? 0 : interval.RRP * 0.1;
+  const regionConfig = {
+    nsw: { peakNetworkCents: 12.0, shoulderNetworkCents: 7.0, offpeakNetworkCents: 3.7, envCents: 3.0, retailOpsCents: 2.0, marginCents: 2.0, businessSurchargeCents: 1.0 },
+    qld: { peakNetworkCents: 11.0, shoulderNetworkCents: 6.0, offpeakNetworkCents: 3.3, envCents: 2.5, retailOpsCents: 2.0, marginCents: 1.5, businessSurchargeCents: 1.0 },
+    vic: { peakNetworkCents: 10.0, shoulderNetworkCents: 6.0, offpeakNetworkCents: 3.0, envCents: 2.0, retailOpsCents: 2.5, marginCents: 1.5, businessSurchargeCents: 1.0 },
+    sa:  { peakNetworkCents: 20.0, shoulderNetworkCents: 12.0, offpeakNetworkCents: 8.0, envCents: 1.5, retailOpsCents: 2.5, marginCents: 2.0, businessSurchargeCents: 1.5 },
+    tas: { peakNetworkCents: 14.0, shoulderNetworkCents: 10.0, offpeakNetworkCents: 5.0, envCents: 1.0, retailOpsCents: 2.0, marginCents: 1.0, businessSurchargeCents: 1.0 }
+  }[region];
+
+  let networkCents: number;
+  switch (timeOfUse) {
+    case TouPeriod.PEAK:
+      networkCents = regionConfig.peakNetworkCents;
+      break;
+    case TouPeriod.SHOULDER:
+      networkCents = regionConfig.shoulderNetworkCents;
+      break;
+    case TouPeriod.OFFPEAK:
+    default:
+      networkCents = regionConfig.offpeakNetworkCents;
+      break;
+  }
+
+  let rateExGst =
+    wholesaleCents +
+    networkCents +
+    regionConfig.envCents +
+    regionConfig.retailOpsCents +
+    regionConfig.marginCents;
+
+  if (isBusiness && regionConfig.businessSurchargeCents) {
+    rateExGst += regionConfig.businessSurchargeCents;
+  }
+
+  return includeGst ? rateExGst * 1.1 : rateExGst;
+}
+
+/**
  * SparklineChart displays a 24‑hour line chart for today (blue) and yesterday (grey),
  * with a horizontal red reference line indicating the maximum cost.
  */
@@ -336,7 +393,8 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   const viewBoxWidth = 500;
   const svgHeight = 60;
   const padding = 5;
-  const todayMidnight = new Date(new Date().toLocaleDateString('en-AU', { timeZone: 'Australia/Brisbane' }));
+  // Use toLocaleString rather than toLocaleDateString for correct Australia/Brisbane midnight
+  const todayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
   const yesterdayMidnight = new Date(todayMidnight.getTime() - 24 * 60 * 60 * 1000);
 
   const computeX = (dt: Date, base: Date): number => {
@@ -361,7 +419,6 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
 
   const todayPoints = computePoints(todayIntervals, todayMidnight);
   const yesterdayPoints = computePoints(yesterdayIntervals, yesterdayMidnight);
-
   const allRates = [...todayIntervals, ...yesterdayIntervals].map(iv =>
     getRetailRateFromInterval(iv, region, false, true)
   );
@@ -548,6 +605,7 @@ const App: React.FC = () => {
 
   const scenarioIconElement = getScenarioIcon(scenarioData.iconName);
 
+  // Update meta tags on scenario change.
   useEffect(() => {
     const scenarioTitle = scenarioData.name;
     const regionUpper = regionKey.toUpperCase();
@@ -651,6 +709,20 @@ const App: React.FC = () => {
     );
   };
 
+  // Compute Australian midnight boundaries using toLocaleString for accurate conversion.
+  const nowTime = new Date();
+  const brisbaneTodayMidnight = new Date(nowTime.toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
+  const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
+  const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
+  const todayIntervals = regionIntervals.filter(iv => {
+    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
+    return d >= brisbaneTodayMidnight && d < brisbaneTomorrowMidnight;
+  });
+  const yesterdayIntervals = regionIntervals.filter(iv => {
+    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
+    return d >= brisbaneYesterdayMidnight && d < brisbaneTodayMidnight;
+  });
+
   // Daily summaries grouped by day.
   const dailySummaries = useMemo(() => {
     const groups: { [day: string]: AemoInterval[] } = {};
@@ -684,20 +756,6 @@ const App: React.FC = () => {
     return summaries;
   }, [regionIntervals, regionKey]);
 
-  // For sparkline chart, compute today's and yesterday's intervals.
-  const nowTime = new Date();
-  const brisbaneTodayMidnight = new Date(nowTime.toLocaleDateString('en-AU', { timeZone: 'Australia/Brisbane' }));
-  const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
-  const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
-  const todayIntervals = regionIntervals.filter(iv => {
-    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
-    return d >= brisbaneTodayMidnight && d < brisbaneTomorrowMidnight;
-  });
-  const yesterdayIntervals = regionIntervals.filter(iv => {
-    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
-    return d >= brisbaneYesterdayMidnight && d < brisbaneTodayMidnight;
-  });
-
   return (
     <Box display="flex" flexDirection="column" minHeight="100vh">
       <AppBar position="static" sx={{ marginBottom: 2 }}>
@@ -727,7 +785,7 @@ const App: React.FC = () => {
               <ListItemText primary="About" />
             </ListItem>
             {EnergyScenarios.getAllScenarios().map(item => (
-              <ListItem key={item.id} button onClick={() => handleScenarioChange(item.id)} selected={item.id.toLowerCase() === scenarioKeyStr}>
+              <ListItem key={item.id} button onClick={() => handleScenarioChange(item.id.toLowerCase())} selected={item.id.toLowerCase() === scenarioKeyStr}>
                 <ListItemIcon>{getScenarioIcon(item.iconName)}</ListItemIcon>
                 <ListItemText primary={item.name} />
               </ListItem>
@@ -748,7 +806,7 @@ const App: React.FC = () => {
                 onChange={(event: SelectChangeEvent) => handleScenarioChange(event.target.value)}
               >
                 {EnergyScenarios.getAllScenarios().map(scn => (
-                  <MenuItem key={scn.id} value={scn.id} selected={scn.id.toLowerCase() === scenarioKeyStr}>
+                  <MenuItem key={scn.id} value={scn.id.toLowerCase()}>
                     {scn.name}
                   </MenuItem>
                 ))}
