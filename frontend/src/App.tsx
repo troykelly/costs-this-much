@@ -11,7 +11,8 @@
  *  - A manual refresh button.
  *  - Accessible icons with aria‑labels and tooltips.
  *  - Smooth transitions when pricing numbers update.
- *  - An overlaid 24‑hour trend chart displaying today (blue) and yesterday (grey) with a red reference line for the max rate.
+ *  - An overlaid 24‑hour trend chart displaying today's scenario cost (blue) and the previous day's (grey)
+ *    with a horizontal red reference line indicating the maximum cost.
  *  - Display of "Cheapest" and "Most Expensive" scenario cards with calendar views.
  *  - A daily summary table of wholesale and retail rates, with prices formatted using the Australian locale.
  *  - Clear indication that times are based on NEM Time (Australia/Brisbane).
@@ -222,7 +223,7 @@ function setMetaTag(attrName: string, attrValue: string, content: string): void 
   element.setAttribute('content', content);
 }
 
-// Ray-casting and state determination functions (omitted here for brevity; unchanged)
+// Ray-casting and state determination functions (omitted for brevity; unchanged)
 function isPointInPolygon(polygon: number[][], lat: number, lon: number): boolean { /* ... */ let inside = false; for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) { const xi = polygon[i][1], yi = polygon[i][0]; const xj = polygon[j][1], yj = polygon[j][0]; const intersect = ((yi > lon) !== (yj > lon)) && (lat < (xj - xi) * (lon - yi) / (yj - yi) + xi); if (intersect) inside = !inside; } return inside; }
 function isPointInRingArray(ringArray: number[][][], lat: number, lon: number): boolean {
   if (ringArray.length === 0) return false;
@@ -269,18 +270,22 @@ enum TouPeriod {
 /**
  * SparklineChart displays a 24‑hour line chart for today (blue) and yesterday (grey),
  * with a horizontal red reference line indicating the maximum cost.
+ *
+ * Now the chart plots the per five minute cost for the scenario currently selected.
+ * It accepts an additional prop, "scenarioKey", which is used to calculate the
+ * scenario's cost at each interval.
  */
 interface SparklineChartProps {
   todayIntervals: AemoInterval[];
   yesterdayIntervals: AemoInterval[];
   region: SupportedRegion;
+  scenarioKey: string;
 }
-const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterdayIntervals, region }) => {
+const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterdayIntervals, region, scenarioKey }) => {
   const viewBoxWidth = 500;
   const svgHeight = 60;
   const padding = 5;
-  // Use toLocaleString rather than toLocaleDateString for correct Australia/Brisbane midnight.
-  // Changed locale to en-US for proper parsing.
+  // Use toLocaleString (en-US) for correct Australia/Brisbane midnight.
   const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-US', { timeZone: 'Australia/Brisbane' }));
   const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
   const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
@@ -292,35 +297,34 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   };
 
   const computePoints = (intervals: AemoInterval[], base: Date): string => {
-    const allRates = [...todayIntervals, ...yesterdayIntervals].map(iv =>
-      getRetailRateFromInterval(iv, region, false, true)
+    const allCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
+      EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
     );
-    const maxRate = allRates.length > 0 ? Math.max(...allRates) : 0;
+    const maxCost = allCosts.length > 0 ? Math.max(...allCosts) : 0;
     return intervals.map(iv => {
       const dt = new Date(iv.SETTLEMENTDATE + '+10:00');
       const x = computeX(dt, base);
-      const rate = getRetailRateFromInterval(iv, region, false, true);
-      const y = svgHeight - padding - ((rate / (maxRate || 1)) * (svgHeight - 2 * padding));
+      const cost = EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true));
+      const y = svgHeight - padding - ((cost / (maxCost || 1)) * (svgHeight - 2 * padding));
       return `${x},${y}`;
     }).join(' ');
   };
 
-  // Fixed usage: replaced undefined todayMidnight/yesterdayMidnight with brisbaneTodayMidnight/brisbaneYesterdayMidnight.
   const todayPoints = computePoints(todayIntervals, brisbaneTodayMidnight);
   const yesterdayPoints = computePoints(yesterdayIntervals, brisbaneYesterdayMidnight);
 
-  const allRates = [...todayIntervals, ...yesterdayIntervals].map(iv =>
-    getRetailRateFromInterval(iv, region, false, true)
+  const allCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
+    EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
   );
-  const maxRate = allRates.length > 0 ? Math.max(...allRates) : 0;
-  const yRef = svgHeight - padding - ((maxRate / (maxRate || 1)) * (svgHeight - 2 * padding));
+  const maxCost = allCosts.length > 0 ? Math.max(...allCosts) : 0;
+  const yRef = svgHeight - padding - ((maxCost / (maxCost || 1)) * (svgHeight - 2 * padding));
 
   return (
     <Box mt={2}>
       <Typography variant="subtitle2">
         24‑Hour Trend (Today in blue, Yesterday in grey)
       </Typography>
-      <svg width="100%" viewBox={`0 0 ${viewBoxWidth} ${svgHeight}`} aria-label="24-hour retail rate trend">
+      <svg width="100%" viewBox={`0 0 ${viewBoxWidth} ${svgHeight}`} aria-label="24-hour scenario cost trend">
         {yesterdayIntervals.length > 0 && (
           <polyline fill="none" stroke="#888888" strokeWidth="2" points={yesterdayPoints} />
         )}
@@ -329,7 +333,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
         )}
         <line x1={padding} y1={yRef} x2={viewBoxWidth - padding} y2={yRef} stroke="#ff0000" strokeDasharray="4" strokeWidth="1" />
         <text x={padding + 2} y={yRef - 2} fill="#ff0000" fontSize="10">
-          Max: {maxRate.toFixed(2)} c/kWh
+          Max: {formatCurrency(maxCost)}
         </text>
       </svg>
     </Box>
@@ -853,7 +857,12 @@ const App: React.FC = () => {
           </Box>
 
           {/* Sparkline Chart for 24+48-hour trends */}
-          <SparklineChart todayIntervals={todayIntervals} yesterdayIntervals={yesterdayIntervals} region={regionKey as SupportedRegion} />
+          <SparklineChart
+            todayIntervals={todayIntervals}
+            yesterdayIntervals={yesterdayIntervals}
+            region={regionKey as SupportedRegion}
+            scenarioKey={scenarioKeyStr}
+          />
 
           {/* Reference Grid for other regions */}
           <Box sx={{ maxWidth: 480, width: '100%', marginTop: 2 }}>
