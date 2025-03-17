@@ -69,11 +69,11 @@ jobs:
       #       const cfAccountId   = process.env.CLOUDFLARE_ACCOUNT_ID;
       #       const cfServiceName = process.env.CLOUDFLARE_SERVICE_NAME;
       #       const cfDomainName  = process.env.CLOUDFLARE_DOMAIN_NAME;
-
+      #
       #       if (!cfApiToken || !cfAccountId || !cfServiceName || !cfDomainName) {
       #         throw new Error("Missing CLOUDFLARE_* environment variables/secrets.");
       #       }
-
+      #
       #       async function cfApiRequest(path, method = "GET", body = null) {
       #         const url = `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}${path}`;
       #         const headers = {
@@ -91,7 +91,7 @@ jobs:
       #         }
       #         return response.json();
       #       }
-
+      #
       #       // 1) Ensure Pages Project
       #       async function ensurePagesProject() {
       #         const result = await cfApiRequest("/pages/projects");
@@ -105,7 +105,7 @@ jobs:
       #           console.log(`Project '${cfServiceName}' already exists.`);
       #         }
       #       }
-
+      #
       #       // 2) Ensure domain is attached
       #       async function ensureDomain(domain) {
       #         console.log(`Ensuring domain '${domain}' is attached...`);
@@ -121,7 +121,7 @@ jobs:
       #           console.log(`Domain '${domain}' is already attached.`);
       #         }
       #       }
-
+      #
       #       // Execute checks
       #       await ensurePagesProject();
       #       await ensureDomain(cfDomainName);
@@ -146,4 +146,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy ./frontend/dist --project-name=${{ vars.CLOUDFLARE_SERVICE_NAME }}
+          command: pages deploy ./frontend/dist --project-name=${{ vars.CLOUDFLARE_SERVICE_NAME }} --production --commit-dirty=true
