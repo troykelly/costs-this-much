@@ -285,7 +285,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   const svgHeight = 60;
   const padding = 5;
   // Use toLocaleString (en-US) for correct Australia/Brisbane midnight.
-  const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-US', { timeZone: 'Australia/Brisbane' }));
+  const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
   const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
   const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
 
@@ -622,12 +622,13 @@ const App: React.FC = () => {
   const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
   const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
   const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
+  // Updated: Removed the appended '+10:00'. SETTLEMENTDATE should parse directly.
   const todayIntervals = regionIntervals.filter(iv => {
-    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
+    const d = new Date(iv.SETTLEMENTDATE);
     return d >= brisbaneTodayMidnight && d < brisbaneTomorrowMidnight;
   });
   const yesterdayIntervals = regionIntervals.filter(iv => {
-    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
+    const d = new Date(iv.SETTLEMENTDATE);
     return d >= brisbaneYesterdayMidnight && d < brisbaneTodayMidnight;
   });
 
