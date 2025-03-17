@@ -55,7 +55,14 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
-  DialogActions
+  DialogActions,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Paper
 } from '@mui/material';
 import CardHeader from '@mui/material/CardHeader';
 import BreakfastDiningIcon from '@mui/icons-material/BreakfastDining';
@@ -132,6 +139,18 @@ function formatIntervalTimeRange(dateString: string): string {
   const startTime = startDate.toLocaleTimeString('en-AU', options);
   const endTime = endDate.toLocaleTimeString('en-AU', options);
   return `${startTime} -> ${endTime}`;
+}
+
+/**
+ * Helper function to compute the wholesale price in cents per kWh from an RRP value in $/MWh.
+ * Negative values are floored to 0.
+ *
+ * @param {number} rrp The RRP value in $/MWh.
+ * @return {number} The computed wholesale price in c/kWh.
+ */
+function computeWholesale(rrp: number): number {
+  const w = rrp * 0.1;
+  return w < 0 ? 0 : w;
 }
 
 /**
@@ -369,8 +388,10 @@ function getTimeOfUsePeriodForRegion(date: Date, region: SupportedRegion): TouPe
     }
     case 'tas': {
       if (!dayIsWeekend) {
-        if ((hour >= 7 && hour < 10) || (hour >= 16 && hour < 21)) return TouPeriod.PEAK;
-        else return TouPeriod.OFFPEAK;
+        const isMorningPeak = hour >= 7 && hour < 10;
+        const isEveningPeak = hour >= 16 && hour < 21;
+        if (isMorningPeak || isEveningPeak) return TouPeriod.PEAK;
+        return TouPeriod.OFFPEAK;
       } else {
         return TouPeriod.OFFPEAK;
       }
@@ -384,12 +405,11 @@ function getTimeOfUsePeriodForRegion(date: Date, region: SupportedRegion): TouPe
  * @param {number} rrpInDollarsMWh The RRP value.
  * @return {number} The wholesale price in c/kWh.
  */
-function convertRrpToWholesaleCents(rrpInDollarsMWh: number): number {
-  const rawCents = rrpInDollarsMWh * 0.1;
-  return rawCents < 0 ? 0 : rawCents;
-}
+// (Using computeWholesale helper instead)
 
-// Note: The getRetailRateFromInterval function is now imported from pricingCalculator.ts
+///////////////////////////////////////////////////////////////////////////
+// Main App Component
+///////////////////////////////////////////////////////////////////////////
 
 const App: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
@@ -469,15 +489,15 @@ const App: React.FC = () => {
   };
 
   const regionFilter = regionMapping[regionKey] ?? 'NSW1';
-  const scenarioKey = getScenarioKey().trim();
+  const scenarioKeyStr = getScenarioKey().trim();
 
-  if (!scenarioKey) {
+  if (!scenarioKeyStr) {
     handleScenarioChange('toast');
     return null;
   }
 
-  const scenarioData = EnergyScenarios.getScenarioById(scenarioKey);
-  if (!scenarioData) return <ScenarioNotFound scenarioKey={scenarioKey} />;
+  const scenarioData = EnergyScenarios.getScenarioById(scenarioKeyStr);
+  if (!scenarioData) return <ScenarioNotFound scenarioKey={scenarioKeyStr} />;
 
   const fetchAemoData = async (): Promise<void> => {
     try {
@@ -508,7 +528,7 @@ const App: React.FC = () => {
           true
         );
         setFinalRateCents(computedRate);
-        const scenarioCost = EnergyScenarios.getCostForScenario(scenarioKey, computedRate);
+        const scenarioCost = EnergyScenarios.getCostForScenario(scenarioKeyStr, computedRate);
         setToastCostDollars(scenarioCost);
         setUsedIntervalDate(latest.SETTLEMENTDATE);
       } else {
@@ -541,7 +561,7 @@ const App: React.FC = () => {
 
   for (const interval of intervalsToConsider) {
     const intervalRate = getRetailRateFromInterval(interval, regionKey as SupportedRegion, false, true);
-    const intervalScenarioCost = EnergyScenarios.getCostForScenario(scenarioKey, intervalRate);
+    const intervalScenarioCost = EnergyScenarios.getCostForScenario(scenarioKeyStr, intervalRate);
     if (cheapestCost === null || intervalScenarioCost < cheapestCost) {
       cheapestCost = intervalScenarioCost;
       cheapestInterval = interval;
@@ -609,7 +629,7 @@ const App: React.FC = () => {
         let wholesale = latest.RRP * 0.1;
         if (wholesale < 0) wholesale = 0;
         const finalRate = getRetailRateFromInterval(latest, r as SupportedRegion, false, true);
-        const cost = EnergyScenarios.getCostForScenario(scenarioKey, finalRate);
+        const cost = EnergyScenarios.getCostForScenario(scenarioKeyStr, finalRate);
         results.push({
           region: r.toUpperCase(),
           wholesaleCents: wholesale,
@@ -624,6 +644,7 @@ const App: React.FC = () => {
   }
 
   const referenceCosts = getReferenceCosts();
+
   const allRegionCosts = [
     { region: regionKey.toUpperCase(), scenarioCost: toastCostDollars },
     ...referenceCosts
@@ -685,6 +706,39 @@ const App: React.FC = () => {
     );
   };
 
+  // Compute daily summaries from the current region intervals.
+  const dailySummaries = React.useMemo(() => {
+    const groups: { [day: string]: AemoInterval[] } = {};
+    regionIntervals.forEach(iv => {
+      const day = iv.SETTLEMENTDATE.slice(0, 10);
+      if (!groups[day]) groups[day] = [];
+      groups[day].push(iv);
+    });
+    const summaries: { date: string; minWholesale: number; minRetail: number; maxWholesale: number; maxRetail: number }[] = [];
+    for (const day in groups) {
+      const intervals = groups[day];
+      let minIv = intervals[0];
+      let maxIv = intervals[0];
+      intervals.forEach(iv => {
+        if (computeWholesale(iv.RRP) < computeWholesale(minIv.RRP)) {
+          minIv = iv;
+        }
+        if (computeWholesale(iv.RRP) > computeWholesale(maxIv.RRP)) {
+          maxIv = iv;
+        }
+      });
+      summaries.push({
+        date: day,
+        minWholesale: computeWholesale(minIv.RRP),
+        minRetail: getRetailRateFromInterval(minIv, regionKey as SupportedRegion, false, true),
+        maxWholesale: computeWholesale(maxIv.RRP),
+        maxRetail: getRetailRateFromInterval(maxIv, regionKey as SupportedRegion, false, true)
+      });
+    }
+    summaries.sort((a, b) => a.date.localeCompare(b.date));
+    return summaries;
+  }, [regionIntervals, regionKey]);
+
   return (
     <Box display="flex" flexDirection="column" minHeight="100vh">
       <AppBar position="static" sx={{ marginBottom: 2 }}>
@@ -736,7 +790,7 @@ const App: React.FC = () => {
               <Select
                 labelId="scenario-select-label"
                 label="Select Scenario"
-                value={scenarioKey}
+                value={scenarioKeyStr}
                 onChange={(event: SelectChangeEvent) => handleScenarioChange(event.target.value)}
               >
                 {EnergyScenarios.getAllScenarios().map((scn) => (
@@ -935,6 +989,41 @@ const App: React.FC = () => {
                 );
               })}
             </Grid>
+          </Box>
+
+          {/* New: Daily Wholesale and Retail Rates Summary */}
+          <Box sx={{ maxWidth: 480, width: '100%', marginTop: 2 }}>
+            <Typography variant="h6" gutterBottom>
+              Daily Wholesale and Retail Rates Summary
+            </Typography>
+            {dailySummaries.length === 0 ? (
+              <Typography variant="body2">No daily summary data available.</Typography>
+            ) : (
+              <TableContainer component={Paper}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Date</TableCell>
+                      <TableCell align="right">Cheapest Wholesale (c/kWh)</TableCell>
+                      <TableCell align="right">Cheapest Retail (c/kWh)</TableCell>
+                      <TableCell align="right">Most Expensive Wholesale (c/kWh)</TableCell>
+                      <TableCell align="right">Most Expensive Retail (c/kWh)</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {dailySummaries.map((row) => (
+                      <TableRow key={row.date}>
+                        <TableCell component="th" scope="row">{row.date}</TableCell>
+                        <TableCell align="right">{row.minWholesale.toFixed(3)}</TableCell>
+                        <TableCell align="right">{row.minRetail.toFixed(3)}</TableCell>
+                        <TableCell align="right">{row.maxWholesale.toFixed(3)}</TableCell>
+                        <TableCell align="right">{row.maxRetail.toFixed(3)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
           </Box>
 
         </Box>
