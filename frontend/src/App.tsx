@@ -2,17 +2,16 @@
  * @fileoverview App.tsx - The main React application component integrating retail electricity rate
  * calculations, scenario cost estimation, and regional comparisons.
  *
- * Enhancements include:
- *  - Enhanced loading and error feedback.
- *  - Manual refresh option.
- *  - Improved accessibility with tooltips/aria-labels.
- *  - Subtle animations for value updates.
- *  - A sparkline chart for visualising last 24‐hour trends.
- *  - Clearer messaging regarding timezone (NEM Time, Australia/Brisbane).
- *  - Revised geolocation consent dialog messaging.
- *  - Navigation and scenario transition instructions via tooltips.
- *  - Consistent currency formatting using Intl.NumberFormat.
- *  - Modularisation of complex components.
+ * Enhancements added:
+ *  - Enhanced loading and error feedback with a clear "Loading latest pricing…" message.
+ *  - A manual refresh button.
+ *  - Accessible icons and proper aria‑labels.
+ *  - A subtle transition on pricing value changes.
+ *  - An overlaid sparkline chart showing today's and yesterday's 24‑hour trends (with a reference line for the highest cost).
+ *  - Clarification of timezone (NEM Time in Australia/Brisbane) displayed in the interval text.
+ *  - Refined geolocation consent messaging.
+ *  - Drawer navigation with the current scenario highlighted.
+ *  - Additional guidance on scenario selection.
  *
  * Author: Troy Kelly <troy@troykelly.com>
  * Date: 17 March 2025
@@ -146,27 +145,27 @@ function getScenarioKey(): string {
 function getScenarioIcon(iconName?: string): JSX.Element {
   switch ((iconName || '').toLowerCase()) {
     case 'breakfastdining':
-      return <BreakfastDiningIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Toaster" />;
+      return <BreakfastDiningIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Toaster icon" />;
     case 'shower':
-      return <ShowerIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Shower" />;
+      return <ShowerIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Shower icon" />;
     case 'localcafe':
-      return <LocalCafeIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Boiling water" />;
+      return <LocalCafeIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Boiling water icon" />;
     case 'microwave':
-      return <MicrowaveIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Microwave" />;
+      return <MicrowaveIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Microwave icon" />;
     case 'lightbulb':
-      return <LightbulbIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Light bulb" />;
+      return <LightbulbIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Light bulb icon" />;
     case 'smartphone':
-      return <SmartphoneIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Smartphone" />;
+      return <SmartphoneIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Smartphone icon" />;
     case 'laptop':
-      return <LaptopIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Laptop" />;
+      return <LaptopIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Laptop icon" />;
     case 'locallaundryservice':
-      return <LocalLaundryServiceIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Washing Machine" />;
+      return <LocalLaundryServiceIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Washing machine icon" />;
     case 'localdining':
-      return <LocalDiningIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Dishwasher" />;
+      return <LocalDiningIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Dishwasher icon" />;
     case 'electriccar':
-      return <ElectricCarIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Electric Vehicle" />;
+      return <ElectricCarIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Electric vehicle icon" />;
     default:
-      return <HelpOutlineIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Unknown scenario" />;
+      return <HelpOutlineIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Unknown scenario icon" />;
   }
 }
 
@@ -216,7 +215,7 @@ interface PricingCardProps {
 
 /**
  * PricingCard component displays the current pricing and scenario cost,
- * with refresh option and transition animations.
+ * with refresh option and smooth animation on updates.
  */
 const PricingCard: React.FC<PricingCardProps> = ({
   loading,
@@ -244,8 +243,11 @@ const PricingCard: React.FC<PricingCardProps> = ({
       />
       <CardContent>
         {loading ? (
-          <Box display="flex" justifyContent="center" mt={2}>
+          <Box display="flex" flexDirection="column" alignItems="center" mt={2}>
             <CircularProgress />
+            <Typography variant="body2" mt={1}>
+              Loading latest pricing...
+            </Typography>
           </Box>
         ) : error ? (
           <Alert severity="error">{error}</Alert>
@@ -260,7 +262,7 @@ const PricingCard: React.FC<PricingCardProps> = ({
             >
               <Box display="flex" alignItems="center" mb={1}>
                 <MonetizationOnIcon fontSize="large" sx={{ marginRight: 1 }} aria-label="Price Icon" />
-                <Typography variant="h4" color="secondary">
+                <Typography variant="h4" color="secondary" sx={{ transition: 'all 0.5s ease' }}>
                   {formatCurrency(scenarioCost)}
                 </Typography>
               </Box>
@@ -391,35 +393,78 @@ const ReferenceGrid: React.FC<ReferenceGridProps> = ({
 };
 
 /**
- * SparklineChart component provides a simple SVG line chart for the retail rate
- * across the last 24 hours.
+ * SparklineChart component displays an overlaid 24‑hour line chart for both
+ * today and yesterday's retail rates.
  */
 interface SparklineChartProps {
-  intervals: AemoInterval[];
+  todayIntervals: AemoInterval[];
+  yesterdayIntervals: AemoInterval[];
   region: SupportedRegion;
-  scenarioKey: string;
 }
-const SparklineChart: React.FC<SparklineChartProps> = ({ intervals, region, scenarioKey }) => {
-  if (!intervals || intervals.length === 0) return null;
-  // Compute retail rate in c/kWh for each interval.
-  const data = intervals.map(interval => getRetailRateFromInterval(interval, region, false, true));
-  const width = 200;
-  const height = 50;
+const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterdayIntervals, region }) => {
+  // We'll use a fixed SVG viewBox and allow full width.
+  const svgWidth = 500;
+  const svgHeight = 60;
   const padding = 5;
-  const minValue = Math.min(...data);
-  const maxValue = Math.max(...data);
+
+  // Determine today and yesterday midnights in Australia/Brisbane time
+  const now = new Date();
+  const todayMidnight = new Date(now.toLocaleDateString('en-AU', { timeZone: 'Australia/Brisbane' }));
+  const yesterdayMidnight = new Date(todayMidnight.getTime() - 24 * 60 * 60 * 1000);
+
+  // Helper: Given an interval and a base midnight, compute x coordinate (0 to 24h mapped to svgWidth-paddings)
+  const computeX = (intervalDate: Date, baseMidnight: Date): number => {
+    const diff = intervalDate.getTime() - baseMidnight.getTime();
+    const fraction = diff / (24 * 60 * 60 * 1000);
+    return padding + fraction * (svgWidth - 2 * padding);
+  };
+
+  // Compute retail rates (c/kWh) for today and yesterday intervals.
+  const todayData: number[] = todayIntervals.map(interval =>
+    getRetailRateFromInterval(interval, region, false, true)
+  );
+  const yesterdayData: number[] = yesterdayIntervals.map(interval =>
+    getRetailRateFromInterval(interval, region, false, true)
+  );
+
+  if (todayData.length === 0 && yesterdayData.length === 0) return null;
+
+  const allData = [...todayData, ...yesterdayData];
+  const minValue = Math.min(...allData);
+  const maxValue = Math.max(...allData);
   const range = maxValue - minValue || 1;
-  // Generate points for the polyline.
-  const points = data.map((value, index) => {
-    const x = padding + (index / (data.length - 1)) * (width - 2 * padding);
-    const y = height - padding - ((value - minValue) / range) * (height - 2 * padding);
-    return `${x},${y}`;
-  }).join(' ');
+
+  // Compute points for a dataset using its respective midnight as base.
+  const computePointsForData = (dataIntervals: AemoInterval[], baseMidnight: Date): string => {
+    return dataIntervals.map(interval => {
+      const intervalDate = new Date(interval.SETTLEMENTDATE + '+10:00');
+      const x = computeX(intervalDate, baseMidnight);
+      const y = svgHeight - padding - ((getRetailRateFromInterval(interval, region, false, true) - minValue) / range) * (svgHeight - 2 * padding);
+      return `${x},${y}`;
+    }).join(' ');
+  };
+
+  const todayPoints = computePointsForData(todayIntervals, todayMidnight);
+  const yesterdayPoints = computePointsForData(yesterdayIntervals, yesterdayMidnight);
+
+  // y position for reference line (highest value)
+  const yRef = svgHeight - padding - ((maxValue - minValue) / range) * (svgHeight - 2 * padding);
+
   return (
     <Box mt={2}>
-      <Typography variant="subtitle2">24-hour Trend</Typography>
-      <svg width={width} height={height} aria-label="Sparkline chart for rate trend">
-        <polyline fill="none" stroke="#1976d2" strokeWidth="2" points={points} />
+      <Typography variant="subtitle2">24‑Hour Trend (Today in blue, Yesterday in grey)</Typography>
+      <svg width="100%" viewBox={`0 0 ${svgWidth} ${svgHeight}`} aria-label="Sparkline chart for rate trends">
+        {/* Yesterday data */}
+        {yesterdayData.length > 0 && (
+          <polyline fill="none" stroke="#888888" strokeWidth="2" points={yesterdayPoints} />
+        )}
+        {/* Today data */}
+        {todayData.length > 0 && (
+          <polyline fill="none" stroke="#1976d2" strokeWidth="2" points={todayPoints} />
+        )}
+        {/* Horizontal reference line for the highest cost */}
+        <line x1={padding} y1={yRef} x2={svgWidth - padding} y2={yRef} stroke="#ff0000" strokeDasharray="4" strokeWidth="1" />
+        <text x={padding + 2} y={yRef - 2} fill="#ff0000" fontSize="10">Highest: {maxValue.toFixed(2)} c/kWh</text>
       </svg>
     </Box>
   );
@@ -439,9 +484,8 @@ const GeolocationDialog: React.FC<GeolocationDialogProps> = ({ open, onAllow, on
     <DialogTitle>Location Data Request</DialogTitle>
     <DialogContent>
       <Typography variant="body1">
-        We need to access your location to determine your closest electricity region.
-        This information will only be used to tailor the pricing data to your area and
-        will not be stored or tracked.
+        We would like to access your location only to determine your nearest electricity pricing region.
+        Your location data is used solely for this purpose and is not stored or tracked beyond this session.
       </Typography>
     </DialogContent>
     <DialogActions>
@@ -459,7 +503,7 @@ interface ScenarioSelectorProps {
   onScenarioChange: (newScenario: string) => void;
 }
 const ScenarioSelector: React.FC<ScenarioSelectorProps> = ({ currentScenarioKey, onScenarioChange }) => (
-  <Box sx={{ marginBottom: 2, display: 'flex', alignItems: 'center' }}>
+  <Box sx={{ marginBottom: 2, display: 'flex', flexDirection: 'column' }}>
     <FormControl fullWidth>
       <InputLabel id="scenario-select-label">Select Scenario</InputLabel>
       <Select
@@ -475,11 +519,9 @@ const ScenarioSelector: React.FC<ScenarioSelectorProps> = ({ currentScenarioKey,
         ))}
       </Select>
     </FormControl>
-    <Tooltip title="Select a scenario from the list, or change the scenario by altering the subdomain (e.g., toast.coststhismuch.au)">
-      <IconButton aria-label="Scenario instructions">
-        <InfoIcon />
-      </IconButton>
-    </Tooltip>
+    <Typography variant="caption" mt={1}>
+      You can also change the scenario by using a subdomain (e.g., toast.coststhismuch.au)
+    </Typography>
   </Box>
 );
 
@@ -490,7 +532,6 @@ function AboutPage({ drawerOpen, toggleDrawer }: { drawerOpen: boolean; toggleDr
   useEffect(() => {
     const pageTitle = 'About - Costs This Much';
     document.title = pageTitle;
-    // Metadata setting can be added as required
   }, []);
   return (
     <Box display="flex" flexDirection="column" minHeight="100vh">
@@ -513,7 +554,7 @@ function AboutPage({ drawerOpen, toggleDrawer }: { drawerOpen: boolean; toggleDr
               </ListItemIcon>
               <ListItemText primary="Home" />
             </ListItem>
-            <ListItem button>
+            <ListItem button selected>
               <ListItemIcon>
                 <InfoIcon />
               </ListItemIcon>
@@ -543,8 +584,8 @@ function AboutPage({ drawerOpen, toggleDrawer }: { drawerOpen: boolean; toggleDr
         </Typography>
         <Typography variant="body1" paragraph>
           This project was created by Troy Kelly, and all content is released under the CC0 1.0 Universal
-          dedication. For further details, please visit our{" "}
-          <Link href="https://github.com/troykelly/costs-this-much" target="_blank" rel="noopener noreferrer">
+          dedication. For further details, please visit our{' '}
+          <Link href="https://github.com/troykelly/costs-how-much" target="_blank" rel="noopener noreferrer">
             GitHub repository
           </Link>.
         </Typography>
@@ -566,7 +607,7 @@ function onNavigateHome(): void {
 }
 
 /**
- * The main App component.
+ * Main App component.
  */
 const App: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
@@ -586,9 +627,9 @@ const App: React.FC = () => {
   const regionMapping: Record<string, string> = {
     nsw: 'NSW1',
     qld: 'QLD1',
+    vic: 'VIC1',
     sa: 'SA1',
-    tas: 'TAS1',
-    vic: 'VIC1'
+    tas: 'TAS1'
   };
   const regionFilter = regionMapping[regionKey] ?? 'NSW1';
 
@@ -621,6 +662,7 @@ const App: React.FC = () => {
       setAllIntervals(data['5MIN']);
       const regionData = data['5MIN'].filter(interval => interval.REGIONID === regionFilter);
       regionData.sort((a, b) => new Date(a.SETTLEMENTDATE).getTime() - new Date(b.SETTLEMENTDATE).getTime());
+      setRegionIntervals(regionData);
       if (regionData.length > 0) {
         const latest = regionData[regionData.length - 1];
         let wholesale = latest.RRP * 0.1;
@@ -636,7 +678,6 @@ const App: React.FC = () => {
         setFinalRateCents(0);
         setToastCostDollars(0);
       }
-      setRegionIntervals(regionData);
     } catch (err: any) {
       setError(err.message || 'Failed to fetch AEMO data.');
       setRrpCentsPerKWh(0);
@@ -653,6 +694,11 @@ const App: React.FC = () => {
     const intervalId = setInterval(fetchAemoData, 5 * 60 * 1000);
     return () => clearInterval(intervalId);
   }, [regionFilter, scenarioKey]);
+
+  // If the URL includes "/about", then render the About page.
+  if (window.location.pathname.toLowerCase().includes('/about')) {
+    return <AboutPage drawerOpen={drawerOpen} toggleDrawer={(open: boolean) => () => setDrawerOpen(open)} />;
+  }
 
   /**
    * Computes reference cost data for other regions.
@@ -862,16 +908,26 @@ const App: React.FC = () => {
     return null;
   };
 
+  // Compute intervals for today and yesterday based on Australia/Brisbane time.
+  const nowTime = new Date();
+  const brisbaneTodayMidnight = new Date(nowTime.toLocaleDateString('en-AU', { timeZone: 'Australia/Brisbane' }));
+  const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
+  const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
+
+  const todayIntervals = regionIntervals.filter((intv) => {
+    const d = new Date(intv.SETTLEMENTDATE + '+10:00');
+    return d >= brisbaneTodayMidnight && d < brisbaneTomorrowMidnight;
+  });
+  const yesterdayIntervals = regionIntervals.filter((intv) => {
+    const d = new Date(intv.SETTLEMENTDATE + '+10:00');
+    return d >= brisbaneYesterdayMidnight && d < brisbaneTodayMidnight;
+  });
+
   return (
     <Box display="flex" flexDirection="column" minHeight="100vh">
       <AppBar position="static" sx={{ marginBottom: 2 }}>
         <Toolbar>
-          <IconButton
-            edge="start"
-            color="inherit"
-            aria-label="Menu"
-            onClick={() => setDrawerOpen(true)}
-          >
+          <IconButton edge="start" color="inherit" aria-label="Menu" onClick={() => setDrawerOpen(true)}>
             <MenuIcon />
           </IconButton>
           <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
@@ -888,11 +944,35 @@ const App: React.FC = () => {
           onKeyDown={() => setDrawerOpen(false)}
         >
           <List>
-            <ListItem button onClick={() => (window.location.href = '/nsw?s=toast')}>
+            <ListItem button onClick={() => (window.location.href = '/nsw?s=toast')} selected={regionKey === 'nsw'}>
               <ListItemIcon>
                 <BreakfastDiningIcon />
               </ListItemIcon>
-              <ListItemText primary="Home" />
+              <ListItemText primary="NSW" />
+            </ListItem>
+            <ListItem button onClick={() => handleRegionClick('qld')} selected={regionKey === 'qld'}>
+              <ListItemIcon>
+                <BreakfastDiningIcon />
+              </ListItemIcon>
+              <ListItemText primary="QLD" />
+            </ListItem>
+            <ListItem button onClick={() => handleRegionClick('vic')} selected={regionKey === 'vic'}>
+              <ListItemIcon>
+                <BreakfastDiningIcon />
+              </ListItemIcon>
+              <ListItemText primary="VIC" />
+            </ListItem>
+            <ListItem button onClick={() => handleRegionClick('sa')} selected={regionKey === 'sa'}>
+              <ListItemIcon>
+                <BreakfastDiningIcon />
+              </ListItemIcon>
+              <ListItemText primary="SA" />
+            </ListItem>
+            <ListItem button onClick={() => handleRegionClick('tas')} selected={regionKey === 'tas'}>
+              <ListItemIcon>
+                <BreakfastDiningIcon />
+              </ListItemIcon>
+              <ListItemText primary="TAS" />
             </ListItem>
             <ListItem button onClick={() => (window.location.href = '/about')}>
               <ListItemIcon>
@@ -901,7 +981,12 @@ const App: React.FC = () => {
               <ListItemText primary="About" />
             </ListItem>
             {EnergyScenarios.getAllScenarios().map((item) => (
-              <ListItem button key={item.id} onClick={() => handleScenarioChange(item.id)}>
+              <ListItem
+                button
+                key={item.id}
+                onClick={() => handleScenarioChange(item.id)}
+                selected={item.id === scenarioKey}
+              >
                 <ListItemIcon>{getScenarioIcon(item.iconName)}</ListItemIcon>
                 <ListItemText primary={item.name} />
               </ListItem>
@@ -925,12 +1010,9 @@ const App: React.FC = () => {
             onRefresh={fetchAemoData}
           />
           <SparklineChart
-            intervals={regionIntervals.filter((intv) => {
-              const intervalDate = new Date(intv.SETTLEMENTDATE + '+10:00');
-              return new Date().getTime() - intervalDate.getTime() <= 24 * 60 * 60 * 1000;
-            })}
+            todayIntervals={todayIntervals}
+            yesterdayIntervals={yesterdayIntervals}
             region={regionKey as SupportedRegion}
-            scenarioKey={scenarioKey}
           />
           <ReferenceGrid
             referenceCosts={getReferenceCosts()}
@@ -943,7 +1025,7 @@ const App: React.FC = () => {
 
       <Box component="footer" sx={{ textAlign: 'center', py: 2 }}>
         <Typography variant="body2">
-          CC0 1.0 Universal | <a href="https://github.com/troykelly/costs-this-much">GitHub</a> | <a href="https://troykelly.com/">Troy Kelly</a>
+          CC0 1.0 Universal | <a href="https://github.com/troykelly/costs-how-much">GitHub</a> | <a href="https://troykelly.com/">Troy Kelly</a>
           <br />
           Data sourced from{' '}
           <Link href="https://www.aemo.com.au/" target="_blank" rel="noopener noreferrer">
