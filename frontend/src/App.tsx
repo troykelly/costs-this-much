@@ -289,6 +289,16 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
   const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
 
+  // Log the intervals arrays for today and yesterday with their computed scenario cost.
+  console.debug("SparklineChart - Today intervals:", todayIntervals.map(iv => ({
+    date: iv.SETTLEMENTDATE,
+    retailCost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
+  })));
+  console.debug("SparklineChart - Yesterday intervals:", yesterdayIntervals.map(iv => ({
+    date: iv.SETTLEMENTDATE,
+    retailCost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
+  })));
+
   const computeX = (dt: Date, base: Date): number => {
     const diff = dt.getTime() - base.getTime();
     const fraction = diff / (24 * 60 * 60 * 1000);
@@ -301,10 +311,12 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
     );
     const maxCost = allCosts.length > 0 ? Math.max(...allCosts) : 0;
     return intervals.map(iv => {
-      const dt = new Date(iv.SETTLEMENTDATE + '+10:00');
+      const dt = new Date(iv.SETTLEMENTDATE);
+      const retailRate = getRetailRateFromInterval(iv, region, false, true);
+      const cost = EnergyScenarios.getCostForScenario(scenarioKey, retailRate);
       const x = computeX(dt, base);
-      const cost = EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true));
       const y = svgHeight - padding - ((cost / (maxCost || 1)) * (svgHeight - 2 * padding));
+      console.debug(`Data point: date=${iv.SETTLEMENTDATE}, retailRate=${retailRate.toFixed(3)} c/kWh, cost=${cost.toFixed(4)} $, x=${x.toFixed(2)}, y=${y.toFixed(2)}`);
       return `${x},${y}`;
     }).join(' ');
   };
@@ -331,7 +343,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
     todayPoints,
     yesterdayPoints
   };
-  console.log("SparklineChart data:", JSON.stringify(chartData, null, 2));
+  console.debug("SparklineChart data:", JSON.stringify(chartData, null, 2));
 
   return (
     <Box mt={2}>
@@ -622,7 +634,7 @@ const App: React.FC = () => {
   const brisbaneTodayMidnight = new Date(new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane' }));
   const brisbaneTomorrowMidnight = new Date(brisbaneTodayMidnight.getTime() + 24 * 60 * 60 * 1000);
   const brisbaneYesterdayMidnight = new Date(brisbaneTodayMidnight.getTime() - 24 * 60 * 60 * 1000);
-  // Updated: Removed the appended '+10:00'. SETTLEMENTDATE should parse directly.
+  // Updated: Removed the appended '+10:00' so that SETTLEMENTDATE parses directly.
   const todayIntervals = regionIntervals.filter(iv => {
     const d = new Date(iv.SETTLEMENTDATE);
     return d >= brisbaneTodayMidnight && d < brisbaneTomorrowMidnight;
