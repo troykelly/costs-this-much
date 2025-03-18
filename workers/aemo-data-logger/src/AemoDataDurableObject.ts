@@ -1,16 +1,16 @@
 /**
  * @fileoverview Durable Object that stores AEMO intervals in a Cloudflare SQL-based backend.
  *
- * This refactored version ensures all variables and objects are strictly typed. It no longer
- * references any made-up transaction types; instead, it uses the storage transaction callback
- * passed by Cloudflare. The DO checks whether the optional "sql" property is bound and logs
- * an error if not available.
+ * This version aligns with Cloudflare’s documented approach to Durable Object SQL storage:
+ *   • Uses "transaction()" from DurableObjectStorage instead of any ad-hoc or synchronous types.
+ *   • Strictly types all fields. 
+ *   • Checks for availability of "sql" before executing queries.
+ *   • Creates/ensures the "intervals" table, then inserts records in a single transaction.
  */
 
 import type {
   DurableObjectState,
   DurableObjectStorage,
-  ExecutionContext,
   SqlStorage,
 } from '@cloudflare/workers-types';
 
@@ -25,7 +25,7 @@ export interface AemoDataEnv {
   AEMO_API_URL: string;
 
   /**
-   * JSON-formatted string of headers for the AEMO API request.
+   * JSON-formatted string of request headers for the AEMO API calls.
    * For example: "{ \"Accept\": \"application/json\" }".
    */
   AEMO_API_HEADERS: string;
@@ -44,17 +44,26 @@ export interface AemoInterval {
 }
 
 /**
- * Interface describing the rows we store in the "intervals" table.
- * Matches the schema used during CREATE TABLE.
+ * Interface describing rows in the "intervals" table.
  */
 export interface IntervalRecord {
+  /**
+   * The settlement date/time for the record, stored as TEXT, so we allow null
+   * if the row is incomplete for any reason.
+   */
   settlementdate: string | null;
+  /**
+   * The region ID for this record, also TEXT in the DB, so may be null.
+   */
   regionid: string | null;
+  /**
+   * The numeric RRP field, stored as NUMERIC in the DB, so may be null.
+   */
   rrp: number | null;
 }
 
 /**
- * Shape of the JSON returned by the AEMO API for 5-minute intervals.
+ * Shape of the AEMO API response for 5-minute intervals.
  */
 export interface AemoApiResponse {
   "5MIN": Array<{
@@ -65,15 +74,15 @@ export interface AemoApiResponse {
 }
 
 /**
- * Durable Object for AEMO data ingestion and storage in an internal SQLite table.
+ * Durable Object for AEMO data ingestion and local storage in an internal SQLite table.
  */
 export class AemoData {
   private readonly state: DurableObjectState;
   private readonly env: AemoDataEnv;
 
   /**
-   * @param {DurableObjectState} state - DO state object.
-   * @param {AemoDataEnv} env - The typed environment bindings for AEMO data.
+   * @param state - DO state object, providing SQL storage and transactions.
+   * @param env   - Typed environment bindings for AEMO data (URL, headers, etc.).
    */
   constructor(state: DurableObjectState, env: AemoDataEnv) {
     this.state = state;
@@ -81,19 +90,13 @@ export class AemoData {
   }
 
   /**
-   * Handles incoming fetch events to this DO.
-   * Expects POST to /sync to perform data ingestion.
-   *
-   * @param {Request} request - The incoming request object.
-   * @returns {Promise<Response>} - An HTTP response indicating success/failure.
+   * Standard fetch handler for this DO. Only responds to POST /sync to ingest data.
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-
     if (url.pathname === '/sync' && request.method === 'POST') {
-      return await this.handleSync();
+      return this.handleSync();
     }
-
     return new Response("Not found", { status: 404 });
   }
 
@@ -101,72 +104,57 @@ export class AemoData {
    * Sync ingestion routine:
    * 1) POST { timeScale: ["5MIN"] } to AEMO_API_URL.
    * 2) Parse expected data from the "5MIN" property of response.
-   * 3) CREATE TABLE IF NOT EXISTS intervals (...), if needed.
+   * 3) CREATE TABLE IF NOT EXISTS intervals(...) if needed.
    * 4) INSERT OR IGNORE intervals to avoid duplicates.
-   * 5) Return a summary message of how many intervals were inserted.
+   * 5) Return a summary message about how many intervals were inserted.
    *
-   * @private
+   * Uses the documented "transaction" approach from Cloudflare for SQL statements.
    */
   private async handleSync(): Promise<Response> {
     try {
-      // Check if the DO has SQL bound
-      const { sql } = this.state.storage;
+      // Check that the "sql" property is available
+      const sql: SqlStorage | undefined = this.state.storage.sql;
       if (!sql) {
-        console.error("SQL storage not available. Check your DO config/migrations.");
-        return new Response(
-          "Sync failed: SQL storage is not enabled for this Durable Object.",
-          { status: 500 }
-        );
+        console.error("SQL storage not available. Check DO configuration/migrations.");
+        return new Response("Sync failed: SQL storage not bound.", { status: 500 });
       }
 
-      // Acquire AEMO headers from environment
+      // Prepare the outbound request
       const { AEMO_API_URL, AEMO_API_HEADERS } = this.env;
-      const parsedHeaders: Record<string, string> = AEMO_API_HEADERS
-        ? JSON.parse(AEMO_API_HEADERS.trim())
-        : {};
-
-      // Prepare the request body for AEMO
+      const parsedHeaders: Record<string, string> =
+        AEMO_API_HEADERS.trim() ? JSON.parse(AEMO_API_HEADERS) : {};
       const requestBody = { timeScale: ['5MIN'] };
-      const fetchResponse = await fetch(AEMO_API_URL, {
+
+      const response = await fetch(AEMO_API_URL, {
         method: 'POST',
         headers: {
           ...parsedHeaders,
-          'content-type': 'application/json'
+          'content-type': 'application/json',
         },
         body: JSON.stringify(requestBody),
       });
-
-      // Verify fetch success
-      if (!fetchResponse.ok) {
-        const errorText = await fetchResponse.text();
-        console.error(`AEMO API error ${fetchResponse.status}: ${errorText}`);
-        return new Response(
-          `Sync failed: AEMO API responded ${fetchResponse.status} - ${errorText}`,
-          { status: 500 }
-        );
+      if (!response.ok) {
+        const errText = await response.text();
+        console.error(`AEMO API error ${response.status}: ${errText}`);
+        return new Response(`Sync failed: AEMO API ${response.status} - ${errText}`, { status: 500 });
       }
 
-      // Parse the response as JSON
-      const rawJson = (await fetchResponse.json()) as AemoApiResponse;
-      const dataArray = rawJson["5MIN"];
-      if (!Array.isArray(dataArray)) {
-        console.error('Response missing the "5MIN" array.');
-        return new Response(
-          'Sync failed: No valid "5MIN" array in AEMO response.',
-          { status: 500 }
-        );
+      // Parse the response JSON for 5MIN array
+      const apiJson = (await response.json()) as AemoApiResponse;
+      const rawData = apiJson["5MIN"];
+      if (!Array.isArray(rawData)) {
+        console.error("Response missing '5MIN' array property.");
+        return new Response("Sync failed: '5MIN' field is invalid or missing.", { status: 500 });
       }
 
-      // Convert raw data to typed interval objects
-      const intervals: AemoInterval[] = dataArray.map((item) => {
-        return {
-          settlementdate: item.SETTLEMENTDATE,
-          regionid: item.REGIONID,
-          rrp: parseFloat(String(item.RRP))
-        };
-      });
+      // Convert the raw data to typed intervals
+      const intervals: AemoInterval[] = rawData.map((item) => ({
+        settlementdate: item.SETTLEMENTDATE,
+        regionid: item.REGIONID,
+        rrp: parseFloat(String(item.RRP)),
+      }));
 
-      // Ensure table exists
+      // Create or ensure the table
       sql.exec(`
         CREATE TABLE IF NOT EXISTS intervals (
           settlementdate TEXT PRIMARY KEY,
@@ -177,11 +165,12 @@ export class AemoData {
 
       let insertedCount = 0;
 
-      // Perform a transaction to insert intervals using INSERT OR IGNORE
-      this.state.storage.transactionSync((txnStorage: DurableObjectStorage) => {
-        const { sql: txnSql } = txnStorage;
+      // Run an async transaction to batch inserts using INSERT OR IGNORE
+      await this.state.storage.transaction(async (txnStorage: DurableObjectStorage) => {
+        // Each statement is run through txnStorage.sql
+        const txnSql = txnStorage.sql;
         if (!txnSql) {
-          console.error("Transaction storage doesn't have SQL. Possibly misconfigured?");
+          console.error("SQL not available inside transaction callback.");
           return;
         }
         for (const interval of intervals) {
@@ -189,21 +178,21 @@ export class AemoData {
             `INSERT OR IGNORE INTO intervals (settlementdate, regionid, rrp) VALUES (?, ?, ?)`,
             interval.settlementdate,
             interval.regionid,
-            interval.rrp
+            interval.rrp,
           );
           insertedCount += cursor.rowsWritten;
         }
       });
 
-      const successMessage = `Sync complete. Fetched ${intervals.length} intervals; inserted ${insertedCount} new.`;
-      console.log(successMessage);
-      return new Response(successMessage, { status: 200 });
+      const summary = `Sync successful: retrieved ${intervals.length} intervals; inserted ${insertedCount} new.`;
+      console.log(summary);
+      return new Response(summary, { status: 200 });
 
     } catch (err) {
-      console.error("Error during handleSync:", err);
+      console.error("Sync error:", err);
       return new Response(
         "Sync failed: " + (err as Error).message,
-        { status: 500 }
+        { status: 500 },
       );
     }
   }

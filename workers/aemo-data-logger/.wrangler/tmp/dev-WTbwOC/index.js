@@ -7,24 +7,20 @@ var AemoData = class {
     __name(this, "AemoData");
   }
   /**
-   * @param {DurableObjectState} state - DO state object.
-   * @param {AemoDataEnv} env - The typed environment bindings for AEMO data.
+   * @param state - DO state object, providing SQL storage and transactions.
+   * @param env   - Typed environment bindings for AEMO data (URL, headers, etc.).
    */
   constructor(state, env) {
     this.state = state;
     this.env = env;
   }
   /**
-   * Handles incoming fetch events to this DO.
-   * Expects POST to /sync to perform data ingestion.
-   *
-   * @param {Request} request - The incoming request object.
-   * @returns {Promise<Response>} - An HTTP response indicating success/failure.
+   * Standard fetch handler for this DO. Only responds to POST /sync to ingest data.
    */
   async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/sync" && request.method === "POST") {
-      return await this.handleSync();
+      return this.handleSync();
     }
     return new Response("Not found", { status: 404 });
   }
@@ -32,26 +28,23 @@ var AemoData = class {
    * Sync ingestion routine:
    * 1) POST { timeScale: ["5MIN"] } to AEMO_API_URL.
    * 2) Parse expected data from the "5MIN" property of response.
-   * 3) CREATE TABLE IF NOT EXISTS intervals (...), if needed.
+   * 3) CREATE TABLE IF NOT EXISTS intervals(...) if needed.
    * 4) INSERT OR IGNORE intervals to avoid duplicates.
-   * 5) Return a summary message of how many intervals were inserted.
+   * 5) Return a summary message about how many intervals were inserted.
    *
-   * @private
+   * Uses the documented "transaction" approach from Cloudflare for SQL statements.
    */
   async handleSync() {
     try {
-      const { sql } = this.state.storage;
+      const sql = this.state.storage.sql;
       if (!sql) {
-        console.error("SQL storage not available. Check your DO config/migrations.");
-        return new Response(
-          "Sync failed: SQL storage is not enabled for this Durable Object.",
-          { status: 500 }
-        );
+        console.error("SQL storage not available. Check DO configuration/migrations.");
+        return new Response("Sync failed: SQL storage not bound.", { status: 500 });
       }
       const { AEMO_API_URL, AEMO_API_HEADERS } = this.env;
-      const parsedHeaders = AEMO_API_HEADERS ? JSON.parse(AEMO_API_HEADERS.trim()) : {};
+      const parsedHeaders = AEMO_API_HEADERS.trim() ? JSON.parse(AEMO_API_HEADERS) : {};
       const requestBody = { timeScale: ["5MIN"] };
-      const fetchResponse = await fetch(AEMO_API_URL, {
+      const response = await fetch(AEMO_API_URL, {
         method: "POST",
         headers: {
           ...parsedHeaders,
@@ -59,30 +52,22 @@ var AemoData = class {
         },
         body: JSON.stringify(requestBody)
       });
-      if (!fetchResponse.ok) {
-        const errorText = await fetchResponse.text();
-        console.error(`AEMO API error ${fetchResponse.status}: ${errorText}`);
-        return new Response(
-          `Sync failed: AEMO API responded ${fetchResponse.status} - ${errorText}`,
-          { status: 500 }
-        );
+      if (!response.ok) {
+        const errText = await response.text();
+        console.error(`AEMO API error ${response.status}: ${errText}`);
+        return new Response(`Sync failed: AEMO API ${response.status} - ${errText}`, { status: 500 });
       }
-      const rawJson = await fetchResponse.json();
-      const dataArray = rawJson["5MIN"];
-      if (!Array.isArray(dataArray)) {
-        console.error('Response missing the "5MIN" array.');
-        return new Response(
-          'Sync failed: No valid "5MIN" array in AEMO response.',
-          { status: 500 }
-        );
+      const apiJson = await response.json();
+      const rawData = apiJson["5MIN"];
+      if (!Array.isArray(rawData)) {
+        console.error("Response missing '5MIN' array property.");
+        return new Response("Sync failed: '5MIN' field is invalid or missing.", { status: 500 });
       }
-      const intervals = dataArray.map((item) => {
-        return {
-          settlementdate: item.SETTLEMENTDATE,
-          regionid: item.REGIONID,
-          rrp: parseFloat(String(item.RRP))
-        };
-      });
+      const intervals = rawData.map((item) => ({
+        settlementdate: item.SETTLEMENTDATE,
+        regionid: item.REGIONID,
+        rrp: parseFloat(String(item.RRP))
+      }));
       sql.exec(`
         CREATE TABLE IF NOT EXISTS intervals (
           settlementdate TEXT PRIMARY KEY,
@@ -91,10 +76,10 @@ var AemoData = class {
         );
       `);
       let insertedCount = 0;
-      this.state.storage.transactionSync((txnStorage) => {
-        const { sql: txnSql } = txnStorage;
+      await this.state.storage.transaction(async (txnStorage) => {
+        const txnSql = txnStorage.sql;
         if (!txnSql) {
-          console.error("Transaction storage doesn't have SQL. Possibly misconfigured?");
+          console.error("SQL not available inside transaction callback.");
           return;
         }
         for (const interval of intervals) {
@@ -107,11 +92,11 @@ var AemoData = class {
           insertedCount += cursor.rowsWritten;
         }
       });
-      const successMessage = `Sync complete. Fetched ${intervals.length} intervals; inserted ${insertedCount} new.`;
-      console.log(successMessage);
-      return new Response(successMessage, { status: 200 });
+      const summary = `Sync successful: retrieved ${intervals.length} intervals; inserted ${insertedCount} new.`;
+      console.log(summary);
+      return new Response(summary, { status: 200 });
     } catch (err) {
-      console.error("Error during handleSync:", err);
+      console.error("Sync error:", err);
       return new Response(
         "Sync failed: " + err.message,
         { status: 500 }
@@ -123,29 +108,30 @@ var AemoData = class {
 // src/index.ts
 var src_default = {
   /**
-   * Handles scheduled cron triggers. This function identifies the
-   * DO instance by name and invokes /sync on it via a POST request.
+   * Called by Cloudflare on your configured cron schedule. This function locates the DO instance
+   * (by name), then invokes the /sync route to fetch and store data.
    *
-   * @param {ScheduledController} controller - The scheduler context.
-   * @param {Env} env - The typed environment containing the DO namespace.
-   * @param {ExecutionContext} ctx - The Cloudflare execution context.
+   * @param controller The scheduled task controller.
+   * @param env        The typed environment containing references and secrets.
+   * @param ctx        The execution context for async tasks.
    */
   async scheduled(controller, env, ctx) {
     try {
       const id = env.AEMO_DATA.idFromName("AEMO_LOGGER");
-      const objStub = env.AEMO_DATA.get(id);
-      await objStub.fetch("https://dummy-url/sync", { method: "POST" });
+      const stub = env.AEMO_DATA.get(id);
+      await stub.fetch("https://dummy-url/sync", { method: "POST" });
     } catch (err) {
-      console.error("Scheduled job error in the data logger:", err);
+      console.error("Data logger scheduled task error:", err);
     }
   },
   /**
-   * Minimal fetch handler. For local testing with cron triggers,
-   * run wrangler dev --test-scheduled and possibly hit /__scheduled as needed.
+   * Minimal fetch handler. The data ingestion primarily relies on the scheduled handler above.
+   * For local testing, you can run wrangler dev --test-scheduled and
+   * call /__scheduled?cron=*+*+*+*+* to simulate the cron invocation.
    */
   async fetch(request, env, ctx) {
     return new Response(
-      "AEMO data logger worker is active. In production, it runs on a schedule.\n",
+      "AEMO data logger Worker. Cron triggers handle ingestion.\n",
       { headers: { "content-type": "text/plain" } }
     );
   }

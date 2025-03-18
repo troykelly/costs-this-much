@@ -1,7 +1,9 @@
 /**
- * @fileoverview The Cloudflare Worker entry point for the AEMO data-logging mode.
- * It automatically runs on a schedule (5-minute intervals) and invokes the Durable
- * Object to fetch and store fresh intervals. Fully typed with no untyped references.
+ * @fileoverview Entry point for the AEMO data logger Worker.
+ *
+ * Schedules every 5 minutes offset by 1 minute to fetch missing intervals from the AEMO API and
+ * store them in a SQL-based Durable Object. Adheres to Cloudflare's documented approach for
+ * using DO + SQL.
  */
 
 import type {
@@ -12,62 +14,60 @@ import type {
 import { AemoData } from './AemoDataDurableObject';
 
 /**
- * Environment interface for the data-logger Worker.
+ * Typed environment for the data-logger approach.
  */
 export interface Env {
   /**
    * Reference to the AEMO_DATA Durable Object, which stores and manages
-   * the interval data in a SQLite database.
+   * the intervals in an embedded SQLite database.
    */
   AEMO_DATA: DurableObjectNamespace;
 
   /**
-   * API URL for AEMO; used here if needed, but primarily
-   * taken from within the DO environment as well.
+   * AEMO API endpoint, also used by the DO for retrieving intervals.
    */
   AEMO_API_URL: string;
 
   /**
-   * JSON string of headers to add to AEMO API fetch calls.
+   * JSON string of HTTP headers to pass to the AEMO API fetch calls.
    */
   AEMO_API_HEADERS: string;
 }
 
-// Make the DO class discoverable by Cloudflare
+/**
+ * Export the DO class so that Wrangler can identify and deploy it.
+ */
 export { AemoData } from './AemoDataDurableObject';
 
 export default {
   /**
-   * Handles scheduled cron triggers. This function identifies the
-   * DO instance by name and invokes /sync on it via a POST request.
+   * Called by Cloudflare on your configured cron schedule. This function locates the DO instance
+   * (by name), then invokes the /sync route to fetch and store data.
    *
-   * @param {ScheduledController} controller - The scheduler context.
-   * @param {Env} env - The typed environment containing the DO namespace.
-   * @param {ExecutionContext} ctx - The Cloudflare execution context.
+   * @param controller The scheduled task controller.
+   * @param env        The typed environment containing references and secrets.
+   * @param ctx        The execution context for async tasks.
    */
-  async scheduled(
-    controller: ScheduledController,
-    env: Env,
-    ctx: ExecutionContext
-  ): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     try {
       const id = env.AEMO_DATA.idFromName("AEMO_LOGGER");
-      const objStub = env.AEMO_DATA.get(id);
+      const stub = env.AEMO_DATA.get(id);
 
-      // Send a POST request to /sync in the DO
-      await objStub.fetch("https://dummy-url/sync", { method: "POST" });
+      // Ask the DO to run its sync routine:
+      await stub.fetch("https://dummy-url/sync", { method: "POST" });
     } catch (err) {
-      console.error("Scheduled job error in the data logger:", err);
+      console.error("Data logger scheduled task error:", err);
     }
   },
 
   /**
-   * Minimal fetch handler. For local testing with cron triggers,
-   * run wrangler dev --test-scheduled and possibly hit /__scheduled as needed.
+   * Minimal fetch handler. The data ingestion primarily relies on the scheduled handler above.
+   * For local testing, you can run wrangler dev --test-scheduled and
+   * call /__scheduled?cron=*+*+*+*+* to simulate the cron invocation.
    */
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return new Response(
-      "AEMO data logger worker is active. In production, it runs on a schedule.\n",
+      "AEMO data logger Worker. Cron triggers handle ingestion.\n",
       { headers: { "content-type": "text/plain" } }
     );
   },
