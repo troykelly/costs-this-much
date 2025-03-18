@@ -12,21 +12,21 @@ import type {
   DurableObject,
   SqlStorage,
   SqlStorageValue
-} from '@cloudflare/workers-types';
+} from "@cloudflare/workers-types";
 
 /** Possible log levels in ascending severity order. */
-type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'NONE';
+type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR" | "NONE";
 
 /** Returns a numeric priority for each log level (lower = more verbose). */
 function getLogPriority(level: string): number {
   switch (level.toUpperCase()) {
-    case 'DEBUG':
+    case "DEBUG":
       return 1;
-    case 'INFO':
+    case "INFO":
       return 2;
-    case 'WARN':
+    case "WARN":
       return 3;
-    case 'ERROR':
+    case "ERROR":
       return 4;
     default:
       return 99; // Means 'NONE' or unknown
@@ -83,7 +83,7 @@ export interface AemoApiResponse {
     PERIODTYPE?: string;
     NETINTERCHANGE?: string | number;
     SCHEDULEDGENERATION?: string | number;
-    SEMISCHEduledGENERATION?: string | number; // Some AEMO data sources might differ in casing
+    SEMISCHEduledGENERATION?: string | number; // Some AEMO data sources may differ in naming/casing
     SEMISCHEcheduledGENERATION?: string | number; // Variation placeholders
     SEMISCHECHEDULEDGENERATION?: string | number; // Variation placeholders
     APCFLAG?: string | number;
@@ -105,10 +105,8 @@ export class AemoData implements DurableObject {
    * the environment to control debugging verbosity.
    */
   constructor(private readonly state: DurableObjectState, env: AemoDataEnv) {
-    // “sql” must be bound if wrangler.*.toml and migrations are configured for SQLite.
     this.sql = state.storage.sql;
     this.env = env;
-    // Default to WARN if LOG_LEVEL is unset or unrecognised
     const configuredLevel = env.LOG_LEVEL ?? "WARN";
     this.logLevel = getLogPriority(configuredLevel);
 
@@ -133,10 +131,7 @@ export class AemoData implements DurableObject {
           ON aemo_five_min_data (settlement_ts);
     `);
 
-    this.log(
-      "INFO",
-      `AemoData DO constructed with LOG_LEVEL="${configuredLevel}".`
-    );
+    this.log("INFO", `AemoData DO constructed with LOG_LEVEL="${configuredLevel}".`);
   }
 
   /**
@@ -144,6 +139,7 @@ export class AemoData implements DurableObject {
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
     if (request.method === "POST" && url.pathname === "/sync") {
       return this.handleSync();
     }
@@ -152,8 +148,8 @@ export class AemoData implements DurableObject {
 
   /**
    * Fetches data from the configured API, parses it, then checks for missing intervals
-   * across the discovered date range and regions, inserting or updating records to ensure
-   * all data is stored. Logs intermediate steps at INFO/DEBUG or WARNING on failures.
+   * or partial data. Uses standard SQLite "INSERT ... ON CONFLICT ... DO UPDATE" to ensure
+   * the complete data is stored. Logs steps at INFO/DEBUG or WARNING on failures.
    */
   private async handleSync(): Promise<Response> {
     this.log("INFO", "Beginning data sync from AEMO...");
@@ -184,17 +180,13 @@ export class AemoData implements DurableObject {
 
     const data: AemoApiResponse = await resp.json();
     if (!Array.isArray(data["5MIN"])) {
-      this.log(
-        "WARNING",
-        `Invalid or missing "5MIN" array in the AEMO response.`
-      );
-      return new Response(
-        `Invalid or missing "5MIN" array in AEMO response.`,
-        { status: 500 }
-      );
+      this.log("WARNING", `Invalid or missing "5MIN" array in the AEMO response.`);
+      return new Response(`Invalid or missing "5MIN" array in AEMO response.`, {
+        status: 500
+      });
     }
 
-    // Map to internal intervals structure
+    // Convert raw records to our intervals structure
     const intervals: AemoInterval[] = data["5MIN"].map((item) => {
       const settlementTs = Math.floor(Date.parse(item.SETTLEMENTDATE) / 1000);
       return {
@@ -202,39 +194,37 @@ export class AemoData implements DurableObject {
         settlement_ts: settlementTs,
         regionid: item.REGIONID,
         rrp: parseFloat(String(item.RRP)),
-        totaldemand:
-          item.TOTALDEMAND !== undefined
-            ? parseFloat(String(item.TOTALDEMAND))
-            : null,
-        periodtype:
-          item.PERIODTYPE !== undefined ? String(item.PERIODTYPE) : null,
-        netinterchange:
-          item.NETINTERCHANGE !== undefined
-            ? parseFloat(String(item.NETINTERCHANGE))
-            : null,
-        scheduledgeneration:
-          item.SCHEDULEDGENERATION !== undefined
-            ? parseFloat(String(item.SCHEDULEDGENERATION))
-            : null,
+        totaldemand: item.TOTALDEMAND !== undefined
+          ? parseFloat(String(item.TOTALDEMAND))
+          : null,
+        periodtype: item.PERIODTYPE !== undefined
+          ? String(item.PERIODTYPE)
+          : null,
+        netinterchange: item.NETINTERCHANGE !== undefined
+          ? parseFloat(String(item.NETINTERCHANGE))
+          : null,
+        scheduledgeneration: item.SCHEDULEDGENERATION !== undefined
+          ? parseFloat(String(item.SCHEDULEDGENERATION))
+          : null,
         semischeduledgeneration: (() => {
-          // Attempt to handle minor naming inconsistencies
+          // Attempt to accommodate minor naming variations
           if (item.SEMISCHEduledGENERATION !== undefined) {
             return parseFloat(String(item.SEMISCHEduledGENERATION));
+          }
+          if (item.SEMISCHEcheduledGENERATION !== undefined) {
+            return parseFloat(String(item.SEMISCHEcheduledGENERATION));
           }
           if (item.SEMISCHECHEDULEDGENERATION !== undefined) {
             return parseFloat(String(item.SEMISCHECHEDULEDGENERATION));
           }
-          if (item.SEMISCHEduledGENERATION !== undefined) {
-            return parseFloat(String(item.SEMISCHEduledGENERATION));
-          }
           return null;
         })(),
-        apcflag:
-          item.APCFLAG !== undefined ? parseFloat(String(item.APCFLAG)) : null
+        apcflag: item.APCFLAG !== undefined
+          ? parseFloat(String(item.APCFLAG))
+          : null
       };
     });
 
-    // Step 2: Check if there's any data
     if (intervals.length === 0) {
       this.log("WARNING", "No intervals found in AEMO data. Aborting.");
       return new Response("No intervals found in AEMO data. Aborting.", {
@@ -242,53 +232,26 @@ export class AemoData implements DurableObject {
       });
     }
 
-    // Find oldest and most recent settlement_ts
+    // Find earliest and latest settlement timestamps
     let earliest = intervals[0].settlement_ts;
     let latest = intervals[0].settlement_ts;
     for (const i of intervals) {
       if (i.settlement_ts < earliest) earliest = i.settlement_ts;
       if (i.settlement_ts > latest) latest = i.settlement_ts;
     }
-    this.log(
-      "DEBUG",
-      `Earliest settlement time: ${earliest}, latest settlement time: ${latest}`
-    );
+    this.log("DEBUG", `Earliest settlement time: ${earliest}, latest: ${latest}`);
 
-    // Step 3: Generate list of unique regions
+    // Identify unique region IDs in the data
     const regionSet = new Set<string>();
     for (const i of intervals) {
       regionSet.add(i.regionid);
     }
-    this.log(
-      "DEBUG",
-      `Unique regions found: ${Array.from(regionSet).join(", ")}`
-    );
+    this.log("DEBUG", `Unique regions: ${Array.from(regionSet).join(", ")}`);
 
-    this.log(
-      "INFO",
-      `Retrieved ${intervals.length} intervals from AEMO. Checking DB for missing or partial data...`
-    );
-
-    /**
-     * Step 4 & 5 combined:
-     * We've been using "INSERT OR IGNORE" which skips rows that already exist. If a row
-     * is partially populated, it won't get updated. Instead, we'll use a standard
-     * SQLite upsert approach: "ON CONFLICT(...) DO UPDATE" to ensure data is fully stored.
-     */
-    let insertedOrUpdatedCount = 0;
+    // Upsert each interval so we don't lose partial columns if the record already exists
+    let upsertCount = 0;
     for (const interval of intervals) {
-      this.log(
-        "DEBUG",
-        `Upserting interval: settlement_ts=${interval.settlement_ts}, ` +
-          `regionid=${interval.regionid}, rrp=${interval.rrp}, ` +
-          `totaldemand=${interval.totaldemand}, periodtype=${interval.periodtype}, ` +
-          `netinterchange=${interval.netinterchange}, ` +
-          `scheduledgeneration=${interval.scheduledgeneration}, ` +
-          `semischeduledgeneration=${interval.semischeduledgeneration}, ` +
-          `apcflag=${interval.apcflag}`
-      );
-
-      // Use a single upsert statement to ensure complete data is stored if it already exists
+      this.log("DEBUG", `Upserting: ${JSON.stringify(interval)}`);
       const cursor = this.sql.exec<IntervalRecord>(
         `
         INSERT INTO aemo_five_min_data (
@@ -316,7 +279,7 @@ export class AemoData implements DurableObject {
         `,
         interval.settlement_ts,
         interval.regionid,
-        interval.regionid, // Insert regionid as region placeholder if no separate region field is provided
+        interval.regionid, // Region placeholder if no distinct region name is available
         interval.rrp,
         interval.totaldemand,
         interval.periodtype,
@@ -325,17 +288,16 @@ export class AemoData implements DurableObject {
         interval.semischeduledgeneration,
         interval.apcflag
       );
-
-      insertedOrUpdatedCount += cursor.rowsWritten;
+      upsertCount += cursor.rowsWritten;
     }
 
-    const msg = `Sync complete. Processed ${intervals.length} intervals; upserted ${insertedOrUpdatedCount} rows.`;
+    const msg = `Sync complete. Processed ${intervals.length} intervals; upserted ${upsertCount} rows.`;
     this.log("INFO", msg);
     return new Response(msg, { status: 200 });
   }
 
   /**
-   * If AEMO_API_HEADERS is invalid JSON or empty, just return an empty object.
+   * If AEMO_API_HEADERS is invalid JSON or empty, return an empty object.
    */
   private parseHeaders(raw: string): Record<string, string> {
     try {
