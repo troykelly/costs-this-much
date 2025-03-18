@@ -136,6 +136,12 @@ export class AemoData implements DurableObject {
 
   /**
    * The DO responds to POST /sync by fetching data from AEMO, then storing intervals in the table.
+   * Steps:
+   *  1) Attempt to download AEMO data, logging any failure and giving up if unsuccessful.
+   *  2) Check oldest/newest values; if none, log failure and give up.
+   *  3) Generate a list of unique regions in the downloaded data.
+   *  4) Check the database for missing data in the range of the downloaded intervals.
+   *  5) Insert or update partial columns (upsert) for all intervals, effectively filling missing records.
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -147,12 +153,14 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Fetches data from the configured API, parses it, then checks for missing intervals
-   * or partial data. Uses standard SQLite "INSERT ... ON CONFLICT ... DO UPDATE" to ensure
-   * the complete data is stored. Logs steps at INFO/DEBUG or WARNING on failures.
+   * Fetches data from the configured API, parses it, then:
+   * - Logs failures and aborts if the fetch fails or data is empty.
+   * - Identifies earliest and latest intervals.
+   * - Finds missing intervals in the DB for those regions/time range (logging at each sub step).
+   * - Performs an upsert for each interval, preserving the existing partial-update functionality.
    */
   private async handleSync(): Promise<Response> {
-    this.log("INFO", "Beginning data sync from AEMO...");
+    this.log("INFO", "Step 1: Attempting to download AEMO data...");
 
     const requestBody = { timeScale: ["5MIN"] };
     const headers = this.parseHeaders(this.env.AEMO_API_HEADERS);
@@ -161,14 +169,20 @@ export class AemoData implements DurableObject {
     this.log("DEBUG", `Request headers: ${JSON.stringify(headers)}`);
     this.log("DEBUG", `Request body: ${JSON.stringify(requestBody)}`);
 
-    const resp = await fetch(this.env.AEMO_API_URL, {
-      method: "POST",
-      headers: {
-        ...headers,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(requestBody)
-    });
+    let resp: Response;
+    try {
+      resp = await fetch(this.env.AEMO_API_URL, {
+        method: "POST",
+        headers: {
+          ...headers,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(requestBody)
+      });
+    } catch (fetchErr) {
+      this.log("ERROR", `AEMO API fetch failed: ${(fetchErr as Error).message}`);
+      return new Response(`AEMO API fetch failed: ${(fetchErr as Error).message}`, { status: 500 });
+    }
 
     if (!resp.ok) {
       const err = await resp.text();
@@ -178,6 +192,7 @@ export class AemoData implements DurableObject {
       });
     }
 
+    this.log("INFO", "Step 2: Checking the AEMO data for oldest and newest intervals...");
     const data: AemoApiResponse = await resp.json();
     if (!Array.isArray(data["5MIN"])) {
       this.log("WARNING", `Invalid or missing "5MIN" array in the AEMO response.`);
@@ -232,7 +247,6 @@ export class AemoData implements DurableObject {
       });
     }
 
-    // Find earliest and latest settlement timestamps
     let earliest = intervals[0].settlement_ts;
     let latest = intervals[0].settlement_ts;
     for (const i of intervals) {
@@ -241,17 +255,37 @@ export class AemoData implements DurableObject {
     }
     this.log("DEBUG", `Earliest settlement time: ${earliest}, latest: ${latest}`);
 
-    // Identify unique region IDs in the data
+    this.log("INFO", "Step 3: Generating a list of unique regions included in the data...");
     const regionSet = new Set<string>();
     for (const i of intervals) {
       regionSet.add(i.regionid);
     }
     this.log("DEBUG", `Unique regions: ${Array.from(regionSet).join(", ")}`);
 
-    // Upsert each interval so we don't lose partial columns if the record already exists
+    this.log("INFO", "Step 4: Checking the database for missing data in the available range...");
+    const regionIds = Array.from(regionSet);
+    if (regionIds.length === 0) {
+      this.log("WARNING", "No region IDs found in the AEMO data. Aborting.");
+      return new Response("No region IDs found in the AEMO data.", { status: 200 });
+    }
+    const placeholders = regionIds.map(() => '?').join(', ');
+    const selectSql = `
+      SELECT settlement_ts, regionid
+      FROM aemo_five_min_data
+      WHERE settlement_ts >= ? AND settlement_ts <= ?
+      AND regionid IN (${placeholders})
+    `;
+    const existingCursor = this.sql.exec<IntervalRecord>(selectSql, earliest, latest, ...regionIds);
+    let existingCount = 0;
+    if (existingCursor.results && existingCursor.results[0] && existingCursor.results[0].rows) {
+      existingCount = existingCursor.results[0].rows.length;
+    }
+    this.log("DEBUG", `Found ${existingCount} existing records in this range for these regions.`);
+
+    this.log("INFO", "Step 5: Inserting or updating records (upsert) in the database...");
     let upsertCount = 0;
     for (const interval of intervals) {
-      this.log("DEBUG", `Upserting: ${JSON.stringify(interval)}`);
+      this.log("DEBUG", `Upserting interval: settlement_ts=${interval.settlement_ts}, regionid=${interval.regionid}`);
       const cursor = this.sql.exec<IntervalRecord>(
         `
         INSERT INTO aemo_five_min_data (
