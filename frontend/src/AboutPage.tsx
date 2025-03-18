@@ -13,6 +13,26 @@ import React, { useEffect } from 'react';
 import { Box, Typography, Link, Button, Divider, Paper } from '@mui/material';
 import { setMetaTag } from './App';
 
+/**
+ * Generates a scenario-specific URL for both local (querystring) and
+ * production (subdomain) environments, without hardcoding a domain.
+ *
+ * @param {string} scenarioId - The scenario identifier (e.g., "toast").
+ * @param {string} region - The NEM region (default "nsw").
+ * @returns A link string that either uses query params (dev) or subdomain (production).
+ */
+function scenarioUrl(scenarioId: string, region: string = 'nsw'): string {
+  const { hostname } = window.location;
+  const isDev = hostname.includes('localhost') || hostname.includes('127.');
+  if (isDev) {
+    // Dev environment
+    return `/${region}?s=${scenarioId}`;
+  } else {
+    // Production environment
+    return `https://${scenarioId}.${hostname}/${region}`;
+  }
+}
+
 const AboutPage: React.FC = () => {
   useEffect(() => {
     const pageTitle = 'About This Site - Costs This Much';
@@ -83,7 +103,7 @@ const AboutPage: React.FC = () => {
             About This Site
           </Typography>
           <Typography variant="body1" paragraph>
-            A live guide to the real cost of electricity in Australia's dynamic energy market.
+            Costs This Much is a live guide to the real cost of electricity in Australia's dynamic energy market.
             We're here to illustrate how wholesale prices (updated every five minutes by AEMO)
             translate into everyday usage costs—like the price of charging your phone, running
             the dishwasher, or toasting a slice of bread. That cost is never static—it flexes
@@ -112,7 +132,7 @@ const AboutPage: React.FC = () => {
             only see a blended rate on their electricity bill, concealing these price extremes.
           </Typography>
           <Typography variant="body1" paragraph>
-            By making real-time AEMO data accessible, Costs This Much help everyday Australians understand
+            By making real-time AEMO data accessible, Costs This Much helps everyday Australians understand
             how the cost of simple activities can change throughout the day, and why timing
             your energy usage matters.
           </Typography>
@@ -145,15 +165,15 @@ const AboutPage: React.FC = () => {
           </Typography>
           <Typography variant="body1" paragraph>
             This site gives immediate context. See how tasks—like{' '}
-            <Link href="https://toast.coststhismuch.au/nsw" target="_blank">
+            <Link href={scenarioUrl('toast')} target="_blank">
               toasting a slice of bread
             </Link>
             ,{' '}
-            <Link href="https://boilwater.coststhismuch.au/nsw" target="_blank">
-              boiling 1 L of water
+            <Link href={scenarioUrl('boilWater')} target="_blank">
+              boiling 1 litre of water
             </Link>
             , or{' '}
-            <Link href="https://evcharge.coststhismuch.au/nsw" target="_blank">
+            <Link href={scenarioUrl('evcharge')} target="_blank">
               charging an EV
             </Link>{' '}
             —translate into real costs, in real time.
@@ -183,65 +203,65 @@ const AboutPage: React.FC = () => {
             Live Price Tracking
           </Typography>
           <Typography variant="body1" paragraph>
-            Costs This Much regularly fetch AEMO's five-minute wholesale energy prices and layer on typical
+            Costs This Much regularly fetches AEMO's five-minute wholesale energy prices and layer on typical
             network charges, environmental levies, and modest overhead to approximate a
-            “real-world” retail rate. Then Costs This Much apply these rates to common usage scenarios:
+            “real-world” retail rate. Then Costs This Much applies these rates to common usage scenarios:
           </Typography>
           <ul>
             <li>
-              <Link href="https://toast.coststhismuch.au/nsw" target="_blank">
+              <Link href={scenarioUrl('toast')} target="_blank">
                 Toasting a slice of bread
               </Link>
             </li>
             <li>
-              <Link href="https://boilwater.coststhismuch.au/nsw" target="_blank">
-                Boiling 1 L of water
+              <Link href={scenarioUrl('boilWater')} target="_blank">
+                Boiling 1 litre of water
               </Link>
             </li>
             <li>
-              <Link href="https://phonecharge.coststhismuch.au/nsw" target="_blank">
+              <Link href={scenarioUrl('phoneCharge')} target="_blank">
                 Charging a smartphone
               </Link>
             </li>
             <li>
-              <Link href="https://bulbhour.coststhismuch.au/nsw" target="_blank">
+              <Link href={scenarioUrl('bulbHour')} target="_blank">
                 Running a 60W bulb for 1h
               </Link>
             </li>
             <li>
-              <Link href="https://laptop.coststhismuch.au/nsw" target="_blank">
-                Laptop charge
+              <Link href={scenarioUrl('laptop')} target="_blank">
+                Charging a typical laptop
               </Link>
             </li>
             <li>
-              <Link href="https://washingmachine.coststhismuch.au/nsw" target="_blank">
+              <Link href={scenarioUrl('washingMachine')} target="_blank">
                 Washing machine cycle
               </Link>
             </li>
             <li>
-              <Link href="https://dishwasher.coststhismuch.au/nsw" target="_blank">
+              <Link href={scenarioUrl('dishwasher')} target="_blank">
                 Dishwasher cycle
               </Link>
             </li>
             <li>
-              <Link href="https://microwave5min.coststhismuch.au/nsw" target="_blank">
+              <Link href={scenarioUrl('microwave5min')} target="_blank">
                 Microwaving for 5 minutes
               </Link>
             </li>
             <li>
-              <Link href="https://shower10min.coststhismuch.au/nsw" target="_blank">
+              <Link href={scenarioUrl('shower10min')} target="_blank">
                 Taking a 10-minute electric hot shower
               </Link>
             </li>
             <li>
-              <Link href="https://evcharge.coststhismuch.au/nsw" target="_blank">
+              <Link href={scenarioUrl('evcharge')} target="_blank">
                 Charging an EV from near-empty
               </Link>
             </li>
           </ul>
           <Typography variant="body1" paragraph>
             These numbers update as market conditions shift. It's a snapshot, not a precise
-            invoice. Your provider's final rate likely differs, but Costs This Much offer a real-time
+            invoice. Your provider's final rate likely differs, but Costs This Much offers a real-time
             benchmark for what's happening in the market.
           </Typography>
 
@@ -251,7 +271,7 @@ const AboutPage: React.FC = () => {
           </Typography>
           <Typography variant="body1" paragraph>
             The site is an educational tool. By converting wholesale ($/MWh) to an approximate
-            retail (c/kWh) and multiplying by typical usage, Costs This Much reveal a ballpark figure for
+            retail (c/kWh) and multiplying by typical usage, Costs This Much reveals a ballpark figure for
             everyday tasks. It's an eye-opener—a single kilowatt-hour could cost you cents or
             many dollars. When the market dips or spikes, you'll see the impact on tasks you
             routinely take for granted.
@@ -281,7 +301,7 @@ const AboutPage: React.FC = () => {
           </Typography>
           <Typography variant="body1" paragraph>
             Each retailer has its own structure—some blend wholesale costs over a day or a
-            month, others impose flat or time-of-use rates. Our numbers reflect a
+            month, others impose flat or time-of-use rates. The numbers presented here reflect a
             simplified “live” approach. Actual charges on your invoice will likely vary due
             to your provider's fees, network costs, or special tariffs.
           </Typography>
@@ -291,7 +311,7 @@ const AboutPage: React.FC = () => {
             This is for Awareness, Not Absolute Accuracy
           </Typography>
           <Typography variant="body1" paragraph>
-            Costs This Much do everything Costs This Much can to keep the data fresh and relevant, but it's still an
+            Costs This Much does everything it can to keep the data fresh and relevant, but it's still an
             approximation. Think of these figures as a knowledge tool—helpful for deciding
             when to run energy-heavy appliances—but not a guarantee of your final bill.
           </Typography>
@@ -316,11 +336,11 @@ const AboutPage: React.FC = () => {
 
           {/* Subsection: Costs This Much Are Not Responsible for Your Energy Decisions */}
           <Typography variant="h6" mt={2} sx={{ fontWeight: 'bold' }}>
-            Costs This Much Are Not Responsible for Your Energy Decisions
+            Costs This Much Is Not Responsible for Your Energy Decisions
           </Typography>
           <Typography variant="body1" paragraph>
-            This site is strictly for educational purposes. While Costs This Much illustrate costs
-            using real-time data, any major financial or usage decisions should be informed
+            This site is strictly for educational purposes. While Costs This Much illustrates costs
+            using real-time data, any financial or usage decisions should be informed
             by multiple sources, including official tariffs and retailer advice. Costs This Much can't
             be held liable for actions taken solely based on these estimates.
           </Typography>
@@ -330,7 +350,7 @@ const AboutPage: React.FC = () => {
             No Liability for Data Accuracy
           </Typography>
           <Typography variant="body1" paragraph>
-            Though Costs This Much pull from credible sources (notably AEMO), data can shift minute by
+            Though Costs This Much pulls from credible sources (notably AEMO), data can shift minute by
             minute. By the time you see a rate, it may already have changed. Accept that
             minor discrepancies or lags are inevitable when dealing with live market data.
           </Typography>
@@ -364,7 +384,7 @@ const AboutPage: React.FC = () => {
             speaking plainly to households, small businesses, and journalists.
           </Typography>
           <Typography variant="body1" paragraph>
-            By showcasing how drastically costs can vary, Costs This Much enable meaningful conversations
+            By showcasing how drastically costs can vary, Costs This Much enables meaningful conversations
             about usage habits, policy debates, and the push toward innovative tariffs.
           </Typography>
 
@@ -374,9 +394,7 @@ const AboutPage: React.FC = () => {
           </Typography>
           <Typography variant="body1" paragraph>
             Writing a story or report on electricity prices, dynamic tariffs, or just curious
-            about real-world energy costs? <a href="https://www.troykelly.com/contact">I'd love to speak with you</a>. Whether you're a
-            journalist, blogger, researcher, or policy maker, I can provide interviews
-            and deeper data insights.
+            about real-world energy costs? <a href="https://www.troykelly.com/contact">I'd love to speak with you</a>.
           </Typography>
 
           <Paper
@@ -384,7 +402,7 @@ const AboutPage: React.FC = () => {
             sx={{ my: 2, p: 2, borderLeft: '5px solid #1976d2', backgroundColor: '#fafafa' }}
           >
             <Typography variant="body1" fontStyle="italic">
-              “Energy pricing has never been more complex. Costs This Much make it simple.”
+              “Energy pricing has never been more complex. Costs This Much makes it simple.”
             </Typography>
           </Paper>
         </Box>
