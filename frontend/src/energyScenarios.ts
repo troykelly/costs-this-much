@@ -196,23 +196,11 @@ export class EnergyScenarios {
     }
   ];
 
-  /**
-   * Retrieves the entire list of predefined energy scenarios.
-   *
-   * @return {EnergyScenario[]} An array of all scenario objects.
-   */
   public static getAllScenarios(): EnergyScenario[] {
     return this.scenarioData;
   }
 
-  /**
-   * Retrieves a single scenario by its unique ID (case-insensitive).
-   *
-   * @param {string} scenarioId The ID of the scenario to look up.
-   * @return {EnergyScenario | null} The matching scenario if found, or null if not found.
-   */
   public static getScenarioById(scenarioId: string): EnergyScenario | null {
-    // Perform a case-insensitive match
     const lowerId = scenarioId.toLowerCase();
     const scenario = this.scenarioData.find(
       (s) => s.id.toLowerCase() === lowerId
@@ -235,7 +223,6 @@ export class EnergyScenarios {
     }
     // Convert the rate from c/kWh to $/kWh
     const rateDollarsPerKWh = retailRateCents / 100;
-    // Cost = usage in kWh × cost in $/kWh
     return scenario.approximateKWhUsed * rateDollarsPerKWh;
   }
 }
