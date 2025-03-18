@@ -599,6 +599,36 @@ const App: React.FC = () => {
   }
   const dailySummaries = computeDailySummaries(regionIntervals, regionKey as SupportedRegion);
 
+  // -----------------------------------------------------------------------
+  // NEW: Compute lowest and highest scenario prices from regionIntervals.
+  type PriceInfo = { cost: number; timestamp: string };
+  let lowestScenario: PriceInfo = { cost: 0, timestamp: '' };
+  let highestScenario: PriceInfo = { cost: 0, timestamp: '' };
+  if (regionIntervals.length > 0) {
+    let minCost = Number.MAX_VALUE;
+    let maxCost = -Infinity;
+    let minInterval: AemoInterval | null = null;
+    let maxInterval: AemoInterval | null = null;
+    regionIntervals.forEach(iv => {
+      const retailRate = getRetailRateFromInterval(iv, regionKey as SupportedRegion, false, true);
+      const cost = EnergyScenarios.getCostForScenario(scenarioKeyStr, retailRate);
+      if (cost < minCost) {
+        minCost = cost;
+        minInterval = iv;
+      }
+      if (cost > maxCost) {
+        maxCost = cost;
+        maxInterval = iv;
+      }
+    });
+    if (minInterval) {
+      lowestScenario = { cost: minCost, timestamp: minInterval.SETTLEMENTDATE };
+    }
+    if (maxInterval) {
+      highestScenario = { cost: maxCost, timestamp: maxInterval.SETTLEMENTDATE };
+    }
+  }
+
   // Get scenario icon element.
   const scenarioIconElement = getScenarioIcon(scenarioData.iconName);
 
@@ -754,14 +784,16 @@ const App: React.FC = () => {
             </CardContent>
             <CardActions>
               <Typography variant="caption">
-                Interval used for calculation: {formatIntervalDate(usedIntervalDate)}{' '}
-                <Tooltip title="AEMO operates on NEM Time (Australia/Brisbane).">
-                  <IconButton size="small" aria-label="Time info">
-                    <InfoIcon fontSize="inherit" />
-                  </IconButton>
-                </Tooltip>
+                Interval used for calculation: {formatIntervalDate(usedIntervalDate)}
               </Typography>
             </CardActions>
+            {!loading && !error && regionIntervals.length > 0 && (
+              <CardActions>
+                <Typography variant="caption">
+                  Lowest Price: {formatCurrency(lowestScenario.cost)} at {formatIntervalDate(lowestScenario.timestamp)} | Highest Price: {formatCurrency(highestScenario.cost)} at {formatIntervalDate(highestScenario.timestamp)}
+                </Typography>
+              </CardActions>
+            )}
           </Card>
 
           {/* 24+24 Hour Comparative Chart */}
