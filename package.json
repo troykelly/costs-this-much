@@ -4,6 +4,8 @@
     "upgrade": "yarn upgrade-interactive"
   },
   "workspaces": [
-    "frontend"
+    "frontend",
+    "workers/aemo-data-logger",
+    "workers/api"
   ]
 }

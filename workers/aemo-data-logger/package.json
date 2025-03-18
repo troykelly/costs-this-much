@@ -1,0 +1,14 @@
+{
+  "name": "aemo-data-logger",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "publish": "wrangler publish",
+    "build": "echo \"No build step needed at this time.\""
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20230322.1"
+  }
+}

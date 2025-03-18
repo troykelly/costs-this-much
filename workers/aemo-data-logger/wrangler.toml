@@ -1,0 +1,34 @@
+name = "aemo-data-logger"
+compatibility_date = "2025-03-18"
+
+# For local dev, you can run "yarn dev" or "wrangler dev"
+# to test the Worker. The 'main' field will map to the final build output.
+
+main = "src/index.ts"
+account_id = "YOUR_ACCOUNT_ID"
+workers_dev = true
+
+# This example uses a cron trigger to run every 5 minutes offset by 1 minute
+# Important: Cron triggers are only triggered in the CF production environment,
+# not in local dev environment. They won't run as expected locally unless emulated.
+triggers = [
+  { crons = ["1,6,11,16,21,26,31,36,41,46,51,56 * * * *"] }
+]
+
+# Durable objects
+[[durable_objects]]
+name = "AemoDataDO"
+class_name = "AemoDataDurableObject"
+# Use the new style annotation to store the DO in an SQL backend
+# If not in open beta yet, you'll need to update this to your DO config
+# like "type = 'node'".
+# For reference, see additional CF docs.
+type = "sql"
+
+# If you want to define an R2 bucket or KV, you can do so here.
+# e.g. [[r2_buckets]] or [[kv_namespaces]]
+
+[vars]
+# Add your environment variables here, for example:
+AEMO_API_URL = "https://visualisations.aemo.com.au/aemo/apps/api/report/5MIN"
+AEMO_API_HEADERS = '{ "Accept": "application/json" }'
