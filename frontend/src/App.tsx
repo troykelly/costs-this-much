@@ -752,7 +752,7 @@ const App: React.FC = () => {
           }}
         >
           <ElectricBoltIcon fontSize="large" sx={{ marginRight: 1 }} />
-          Power Costs This Much!
+          Power Costs This Much?!
         </Typography>
       </Box>
 
@@ -890,7 +890,7 @@ const App: React.FC = () => {
         {/* Big "A X currently costs Y" block */}
         <Box textAlign="center" mt={2}>
           <Typography variant="h6" gutterBottom sx={{ color: '#444' }}>
-            {scenarioData.name.toLowerCase()} currently costs
+            {scenarioData.name} currently costs
           </Typography>
           {loading ? (
             <Box display="inline-flex" flexDirection="column" alignItems="center" mt={2}>
