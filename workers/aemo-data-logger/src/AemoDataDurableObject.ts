@@ -53,18 +53,35 @@ export interface IntervalRecord extends Record<string, SqlStorageValue> {
 
 /** Single 5-minute interval from the AEMO API, plus a derived Unix timestamp. */
 export interface AemoInterval {
-  settlementdate: string;   // e.g. "2025-03-18T00:10:00Z"
-  settlement_ts: number;    // Unix time in seconds (derived from settlementdate)
-  regionid: string;         // e.g. "NSW1"
-  rrp: number;              // numeric RRP
+  settlementdate: string;   
+  settlement_ts: number;    
+  regionid: string;         
+  rrp: number;              
+  totaldemand: number | null;
+  periodtype: string | null;
+  netinterchange: number | null;
+  scheduledgeneration: number | null;
+  semischeduledgeneration: number | null;
+  apcflag: number | null;
 }
 
-/** Shape of the AEMO 5-minute data JSON response. */
+/**
+ * Shape of the AEMO 5-minute data JSON response. 
+ * Adjust fields to match all provided data from AEMO.
+ */
 export interface AemoApiResponse {
   "5MIN": {
     SETTLEMENTDATE: string;
     REGIONID: string;
     RRP: string | number;
+    TOTALDEMAND?: string | number;
+    PERIODTYPE?: string;
+    NETINTERCHANGE?: string | number;
+    SCHEDULEDGENERATION?: string | number;
+    SEMISCHEduledGENERATION?: string | number; // Note: Some AEMO data sources might differ in casing
+    SEMISCHEduledGENERATION?: string | number; // If the data uses different field naming 
+    SEMISCHECHEDULEDGENERATION?: string | number; // Variation sometimes occurs, but leaving as placeholders
+    APCFLAG?: string | number;
   }[];
 }
 
@@ -161,12 +178,32 @@ export class AemoData implements DurableObject {
       return new Response(`Invalid or missing "5MIN" array in AEMO response.`, { status: 500 });
     }
 
+    // Map to internal intervals structure
     const intervals: AemoInterval[] = data["5MIN"].map(item => {
+      const settlementTs = Math.floor(Date.parse(item.SETTLEMENTDATE) / 1000);
       return {
         settlementdate: item.SETTLEMENTDATE,
-        settlement_ts: Math.floor(Date.parse(item.SETTLEMENTDATE) / 1000),
+        settlement_ts: settlementTs,
         regionid: item.REGIONID,
         rrp: parseFloat(String(item.RRP)),
+        totaldemand: item.TOTALDEMAND !== undefined ? parseFloat(String(item.TOTALDEMAND)) : null,
+        periodtype: item.PERIODTYPE !== undefined ? String(item.PERIODTYPE) : null,
+        netinterchange: item.NETINTERCHANGE !== undefined ? parseFloat(String(item.NETINTERCHANGE)) : null,
+        scheduledgeneration: item.SCHEDULEDGENERATION !== undefined ? parseFloat(String(item.SCHEDULEDGENERATION)) : null,
+        semischeduledgeneration: (() => {
+          // Attempt to handle minor naming inconsistencies
+          if (item.SEMISCHEduledGENERATION !== undefined) {
+            return parseFloat(String(item.SEMISCHEduledGENERATION));
+          }
+          if (item.SEMISCHECHEDULEDGENERATION !== undefined) {
+            return parseFloat(String(item.SEMISCHECHEDULEDGENERATION));
+          }
+          if (item.SEMISCHEduledGENERATION !== undefined) {
+            return parseFloat(String(item.SEMISCHEduledGENERATION));
+          }
+          return null;
+        })(),
+        apcflag: item.APCFLAG !== undefined ? parseFloat(String(item.APCFLAG)) : null
       };
     });
 
@@ -176,7 +213,7 @@ export class AemoData implements DurableObject {
       return new Response('No intervals found in AEMO data. Aborting.', { status: 200 });
     }
 
-    // Find oldest and most recent settlement timestamp
+    // Find oldest and most recent settlement_ts
     let earliest = intervals[0].settlement_ts;
     let latest = intervals[0].settlement_ts;
     for (const i of intervals) {
@@ -220,7 +257,10 @@ export class AemoData implements DurableObject {
 
     let insertedCount = 0;
     for (const interval of missing) {
-      this.log('DEBUG', `Inserting interval: settlement_ts=${interval.settlement_ts}, regionid=${interval.regionid}, rrp=${interval.rrp}`);
+      this.log(
+        'DEBUG',
+        `Inserting interval: settlement_ts=${interval.settlement_ts}, regionid=${interval.regionid}, rrp=${interval.rrp}, totaldemand=${interval.totaldemand}, periodtype=${interval.periodtype}, netinterchange=${interval.netinterchange}, scheduledgeneration=${interval.scheduledgeneration}, semischeduledgeneration=${interval.semischeduledgeneration}, apcflag=${interval.apcflag}`
+      );
       const cursor = this.sql.exec<IntervalRecord>(
         `INSERT OR IGNORE INTO aemo_five_min_data (
           settlement_ts,
@@ -236,14 +276,14 @@ export class AemoData implements DurableObject {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         interval.settlement_ts,
         interval.regionid,
-        interval.regionid, // Using regionid as region placeholder
+        interval.regionid, // Inserting regionid as region placeholder unless you have a distinct region field
         interval.rrp,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null
+        interval.totaldemand,
+        interval.periodtype,
+        interval.netinterchange,
+        interval.scheduledgeneration,
+        interval.semischeduledgeneration,
+        interval.apcflag
       );
       insertedCount += cursor.rowsWritten;
     }
