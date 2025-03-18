@@ -81,6 +81,26 @@ function formatCurrency(amount: number): string {
 }
 
 /**
+ * Generates a scenario-specific URL for both local (querystring) and
+ * production (subdomain) environments, without hardcoding a domain.
+ *
+ * @param {string} scenarioId - The scenario identifier (e.g., "toast").
+ * @param {string} region - The NEM region (default "nsw").
+ * @returns A link string that either uses query params (dev) or subdomain (production).
+ */
+function scenarioUrl(scenarioId: string, region: string = 'nsw'): string {
+  const { hostname } = window.location;
+  const isDev = hostname.includes('localhost') || hostname.includes('127.');
+  if (isDev) {
+    // Dev environment
+    return `/${region}?s=${scenarioId}`;
+  } else {
+    // Production environment
+    return `https://${scenarioId}.${hostname}/${region}`;
+  }
+}
+
+/**
  * Returns a full date/time string with "NEM Time" for display (ISO8601 + +10:00).
  */
 function formatIntervalDate(dateString: string): string {
@@ -232,7 +252,7 @@ const App: React.FC = () => {
   // Scenario
   const scenarioKeyStr = getScenarioKey().trim();
   if (!scenarioKeyStr) {
-    window.location.href = '/nsw?s=toast';
+    window.location.href = scenarioUrl('toast', regionKey);
     return null;
   }
   const scenarioData = EnergyScenarios.getScenarioById(scenarioKeyStr);
