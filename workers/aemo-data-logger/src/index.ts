@@ -14,12 +14,12 @@ export { AemoData } from './AemoDataDurableObject';
 
 /**
  * Env interface defining the required environment bindings.
- * @property {DurableObjectNamespace} AemoData The Durable Object namespace for storing AEMO data.
+ * @property {DurableObjectNamespace} AEMO_DATA The Durable Object namespace for storing AEMO data.
  * @property {string} AEMO_API_URL The API endpoint for fetching data from AEMO.
  * @property {string} AEMO_API_HEADERS A JSON-formatted string representing header key-value pairs.
  */
 interface Env {
-  AemoData: DurableObjectNamespace;
+  AEMO_DATA: DurableObjectNamespace;
   AEMO_API_URL: string;
   AEMO_API_HEADERS: string;
 }
@@ -38,8 +38,8 @@ export default {
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     try {
       // Identify the DO instance that stores our data.
-      const id = env.AemoData.idFromName("AEMO_LOGGER");
-      const obj = env.AemoData.get(id);
+      const id = env.AEMO_DATA.idFromName("AEMO_LOGGER");
+      const obj = env.AEMO_DATA.get(id);
 
       // Trigger the Durable Object to perform the sync process.
       await obj.fetch("https://dummy-url/sync", { method: "POST" });
