@@ -1,12 +1,16 @@
 /**
  * @fileoverview The Durable Object that stores AEMO intervals in a SQL backend.
- * This implementation now fully retrieves and inserts data from the AEMO API,
- * covering a rolling 36-hour window.
+ * This implementation was updated to match the existing frontend’s POST approach,
+ * sending { timeScale: ['5MIN'] } in the request payload, rather than using a time window.
  *
- * - Data is fetched from the AEMO_API_URL, which is expected to return an array
- *   of interval objects containing SETTLEMENTDATE, REGIONID, and RRP.
- * - The data is stored in a table named "intervals", keyed by settlementdate.
- * - Duplicate entries are now skipped via an INSERT OR IGNORE approach.
+ * - Data is fetched from the AEMO_API_URL by POST with body { "timeScale": ["5MIN"] },
+ *   as done in the frontend code.  
+ * - The data is expected to be returned in an object with a "5MIN" property containing
+ *   an array of intervals (SETTLEMENTDATE, REGIONID, RRP).
+ * - The intervals table remains as before (“intervals”), keyed by settlementdate.
+ * - Duplicate entries are skipped via an INSERT OR IGNORE approach.
+ * - Failures to fetch or parse the data are now logged and handled (500 response),
+ *   rather than resulting in an unhandled exception.
  */
 
 import type { DurableObjectState } from '@cloudflare/workers-types';
@@ -61,11 +65,11 @@ export class AemoData {
   }
 
   /**
-   * Performs the data synchronisation routine for the last 36 hours:
-   * 1) Calculates the 36-hour time range from the current time.
-   * 2) Fetches data from the AEMO API using the environment variables.
-   * 3) Creates and/or ensures the "intervals" table exists.
-   * 4) Inserts newly discovered intervals, skipping duplicates using INSERT OR IGNORE.
+   * Performs the data synchronisation routine:
+   * 1) Posts to AEMO_API_URL with { timeScale: ['5MIN'] } in JSON body.
+   * 2) Expects a JSON object with a "5MIN" property containing an array of intervals.
+   * 3) Creates/ensures the "intervals" table.
+   * 4) Inserts new intervals with INSERT OR IGNORE to skip duplicates.
    * 5) Returns a summary of the operation.
    *
    * @private
@@ -73,39 +77,49 @@ export class AemoData {
    */
   private async handleSync(): Promise<Response> {
     try {
-      // Establish the time window for data retrieval (last 36 hours).
-      const endTime = new Date();
-      const startTime = new Date(endTime.getTime() - 36 * 60 * 60 * 1000);
-
-      // Read environment-based configs for the AEMO API.
+      // Retrieve AEMO_API_URL and AEMO_API_HEADERS from environment
       const { AEMO_API_URL, AEMO_API_HEADERS } = this.env;
       const headers: Record<string, string> = AEMO_API_HEADERS
         ? JSON.parse(AEMO_API_HEADERS)
         : {};
 
-      // Construct the API URL with the time range as query parameters (if supported by the API).
-      const apiUrl = new URL(AEMO_API_URL);
-      apiUrl.searchParams.set("start", startTime.toISOString());
-      apiUrl.searchParams.set("end", endTime.toISOString());
+      // We now POST to the AEMO API with the same payload as the frontend
+      const requestBody = { timeScale: ['5MIN'] };
+      const response = await fetch(AEMO_API_URL, {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(requestBody)
+      });
 
-      // Fetch the data from AEMO.
-      const response = await fetch(apiUrl.toString(), { headers });
       if (!response.ok) {
-        throw new Error(`AEMO API responded with status ${response.status}: ${await response.text()}`);
+        const errorText = await response.text();
+        console.error(`AEMO API responded with error ${response.status}: ${errorText}`);
+        return new Response(
+          `Sync failed: AEMO API error ${response.status} - ${errorText}`,
+          { status: 500 }
+        );
       }
 
-      // Parse the response JSON. Expected to be an array of objects.
-      const rawData = await response.json();
+      // Parse the response JSON, expecting data["5MIN"] as an array
+      const rawJson = await response.json();
+      const rawData = rawJson['5MIN'];
       if (!Array.isArray(rawData)) {
-        throw new Error("AEMO API did not return the expected JSON array.");
+        console.error('Response JSON missing expected "5MIN" array property.');
+        return new Response(
+          'Sync failed: "5MIN" property not found or invalid in AEMO response.',
+          { status: 500 }
+        );
       }
 
-      // Convert the raw data into an internal structure for insertion.
+      // Convert the raw data to our internal structure
       const intervals: AemoInterval[] = rawData.map((item: any) => {
         return {
           settlementdate: item.SETTLEMENTDATE,
           regionid: item.REGIONID,
-          rrp: parseFloat(item.RRP),
+          rrp: parseFloat(item.RRP)
         };
       });
 
@@ -136,8 +150,7 @@ export class AemoData {
         }
       });
 
-      // Summarise the operation.
-      const message = `Sync completed. Fetched ${intervals.length} intervals, inserted ${insertedCount} new intervals.`;
+      const message = `Sync completed. Received ${intervals.length} intervals, inserted ${insertedCount} new intervals.`;
       console.log(message);
       return new Response(message, { status: 200 });
 
