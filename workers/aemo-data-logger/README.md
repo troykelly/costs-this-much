@@ -1,68 +1,153 @@
-# AEMO Data Logger Worker
+# AEMO Data Logger & API Worker
 
-This Cloudflare Worker is responsible for periodically retrieving electricity market data from AEMO, storing it in a SQL Durable Object. It is scheduled to run every five minutes offset by one minute (e.g., 00:01, 00:06, 00:11, and so on). It ensures that any missing records for the last 36 hours are retrieved and inserted, rather than blindly appending the newest record.
+This folder now contains two Cloudflare Worker modes of operation that share a single SQL-based Durable Object (“AemoDataDO"):
+
+1. **Data Logger Mode**  
+   - Retrieves electricity market data from AEMO at scheduled intervals.  
+   - Uses the “wrangler.logger.toml” to configure cron scheduling.  
+
+2. **API Mode**  
+   - Provides authentication (JWT issuance & refresh) and offers a data retrieval endpoint for clients.  
+   - Uses the “wrangler.api.toml” to configure HTTP routes for token and data operations.  
 
 --------------------------------------------------------------------------------
 
 ## Overview
 
-• On each scheduled execution (controlled by Wrangler's schedule definition), this worker:  
-  1. Calculates which intervals (within the last 36 hours) are missing from the database.  
-  2. Queries AEMO for 5-minute data (which often includes up to 36 hours of data).  
-  3. Inserts any missing intervals that are present in the AEMO response.  
-  4. Ignores intervals not yet available or not returned by AEMO, and waits until the next scheduled run for those.  
+Both modes rely on the same Durable Object, which uses Cloudflare’s SQL-backed storage to persist time-series data. This allows you to:
 
-By storing the data in a Cloudflare Durable Object using SQLite, you can easily handle queries for up to 36 hours (or beyond, if you choose) of 5-minute intervals, with minimal overhead. 
+• Store historical intervals (e.g., 5-minute settlement data) without complicated external databases.  
+• Query stored intervals to serve requests in the API.  
+
+--------------------------------------------------------------------------------
+
+## Data Logger Mode
+
+• **Purpose**: Continuously fetch and store data from AEMO.  
+• **Configuration File**: “wrangler.logger.toml”  
+• **Entry Point**: “src/index.ts”  
+
+Key steps in this mode:
+
+1. **Scheduled Execution**: Runs every 5 minutes offset by 1 minute (e.g., 01, 06, 11, 16...).  
+2. **Missing Data Detection** (Future Implementation Needed):  
+   - Determine which intervals in the last 36 hours are not in the DO’s database.  
+3. **Fetching & Insertion** (Scaffolded):  
+   - Retrieve data from AEMO, parse the intervals, and insert new records into the Durable Object’s SQL database.  
+4. **Error Handling** (Future Implementation Needed):  
+   - Properly handle network or data inaccuracies. Possibly re-fetch on failures.  
+
+--------------------------------------------------------------------------------
+
+## API Mode
+
+• **Purpose**: Exposes JWT-secured endpoints for retrieving data (and, optionally, issuing/revoking tokens).  
+• **Configuration File**: “wrangler.api.toml”  
+• **Entry Point**: “src/api/index.ts”  
+
+Key endpoints (placeholders):
+
+1. **/.well-known/jwks.json**  
+   - Returns public keys for clients to verify JWT signatures.  
+2. **POST /token**  
+   - Issues short-lived access token and a longer-lived refresh token for valid client IDs.  
+3. **POST /refresh**  
+   - Exchanges a refresh token for a new short-lived access token.  
+4. **GET /data**  
+   - Retrieves data (such as up to 31 days of 5-minute intervals) from the shared DO, currently a stub.  
 
 --------------------------------------------------------------------------------
 
 ## Local Development
 
-1. Ensure you have Yarn and Wrangler installed globally or via Corepack.  
-2. From the repository root:  
-   • yarn install  
-   • cd workers/aemo-data-logger  
-   • yarn dev  
+1. **Install Dependencies**  
+   - From the repo root, run:  
+     yarn install
+   - Then `cd workers/aemo-data-logger`.
 
-When running locally, the schedule events typically do not fire in the same manner they do in production. Instead, you can directly invoke or test your code with Wrangler console or normal Worker requests.  
+2. **Run Logger Mode**  
+   - Prepare a local environment and run:  
+     yarn dev:logger
+   - This uses “wrangler.logger.toml” and follows the code in “src/index.ts”.  
+   - Note: Cron triggers are not automatically fired locally; you can invoke them manually or rely on console/fetch testing.
+
+3. **Run API Mode**  
+   - To start the API in local dev mode, run:  
+     yarn dev:api
+   - This uses “wrangler.api.toml” and hosts the endpoints in “src/api/index.ts”.  
+
+4. **Testing**  
+   - For the API, test endpoints with cURL or Postman (e.g., “GET /data”).  
+   - For the logger, you can check logs or manually call the Worker’s fetch event.  
 
 --------------------------------------------------------------------------------
 
-## Deployment
+## Publishing
 
-1. Configure your Cloudflare account settings (API keys or tokens, etc.) in Wrangler config.  
-2. Run:  
-   • yarn publish  
+• **Logger**:  
+  yarn publish:logger
+  Deploys the scheduled Worker that retrieves data from AEMO.
 
-This will build (if needed) and deploy the Worker code to your assigned Cloudflare Worker subdomain.  
+• **API**:  
+  yarn publish:api
+  Deploys the authentication and data retrieval API.  
 
 --------------------------------------------------------------------------------
 
-## Environment Variables & Configuration
+## Environment Variables
 
-• You can define environment variables in your wrangler.toml, under [vars], or in your Cloudflare dashboard. Examples:  
-  - AEMO_API_URL: The base URL for retrieving AEMO data.  
-  - ANY_AUTH_HEADERS: If needed, to authenticate with AEMO.  
+Both modes rely on environment variables set in their respective “wrangler.*.toml” or the Cloudflare Dashboard:
+
+• **AEMO_API_URL** / **AEMO_API_HEADERS** (Logger)  
+  - Used to fetch data from AEMO.  
+• **CLIENT_IDS** (API)  
+  - JSON array or string specifying valid client IDs for token requests.  
+• **SIGNING_KEYS** (API)  
+  - JSON array describing public/private RSA (or other supported) keys for token signing and verification.  
+
+--------------------------------------------------------------------------------
+
+## Outstanding Tasks
+
+1. **Complete Data Fetch Logic**  
+   - The `src/index.ts` currently has a stub for syncing data. You need to fetch the correct intervals from AEMO, parse them, and insert the missing records into the Durable Object.  
+
+2. **Implement Real Error Handling**  
+   - Handle partial outages, repeated failures, and data validation. Possibly requeue or log errors for future reprocessing.  
+
+3. **Proper Token Signing/Verification**  
+   - Replace the “FAKE” token placeholders in “src/api/jwtSupport.ts” with a real signing algorithm (e.g., RS256 via `jsonwebtoken` in the Workers runtime).  
+   - Validate keys properly, parse the public key as JWK for the JWKS endpoint.  
+
+4. **Enhance Data Retrieval**  
+   - In “API Mode,” the “/data” endpoint is stubbed. Implement logic to query intervals from the DO’s SQL storage, filter based on date range, and return the results.  
+
+5. **Add Security Layers**  
+   - Restrict or throttle repeated requests, protect from injection or rate-limits, and ensure the DO fetch calls are properly validated.  
+
+6. **Performance Monitoring & Alerts**  
+   - Evaluate how to handle large volumes of data or potential latency spikes in reading from AEMO.  
+   - Use logs, alerts, or Cloudflare analytics to detect errors quickly.  
 
 --------------------------------------------------------------------------------
 
 ## File Layout
 
-- wrangler.toml (now wrangler.logger.toml): The Worker configuration (scheduled/cron) and Durable Object definitions.  
-- wrangler.api.toml: The Worker configuration for the API mode, also referencing the same Durable Object.  
-- package.json: Scripts for dev/publish.  
-- src/index.ts: Entry point for the Worker event listeners (scheduled/cron).  
-- src/AemoDataDurableObject.ts: Durable Object class with SQL backend.  
-- src/docs/sql-storage.md: Example documentation snippet for using the SQL API in Durable Objects.  
-- src/api/*: The API code and logic for authentication, token issuance, and data retrieval.
+- **wrangler.logger.toml**  
+  Schedules the logger Worker for periodic data retrieval.  
+- **wrangler.api.toml**  
+  Hosts the API endpoints for token issuance and data retrieval.  
+- **src/index.ts**  
+  The main logger code (scheduled/cron).  
+- **src/AemoDataDurableObject.ts**  
+  Shared Durable Object used by both modes, storing intervals in a SQLite DB.  
+- **src/api/**  
+  The API logic (JWT issuance, refresh, data endpoint).  
+- **src/docs/sql-storage.md**  
+  Example and reference docs for using “sql.exec()” in the Durable Object.  
 
 --------------------------------------------------------------------------------
 
 ## Next Steps
 
-• Supply your AEMO fetch logic in src/index.ts, referencing the Durable Object (AemoDataDurableObject) to store the intervals.  
-• Customise the schedule trigger in wrangler.logger.toml.  
-• Use wrangler.api.toml to run the API code (src/api/index.ts).  
-• Add advanced logic for partial outages, error handling, and performance monitoring.  
-
---------------------------------------------------------------------------------
+After implementing the above todos, you can run or publish to Cloudflare. This design ensures that both the scheduled data-logging logic and the client-facing API share the same SQL-based Durable Object for data consistency and reliability.

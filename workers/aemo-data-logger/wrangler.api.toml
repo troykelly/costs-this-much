@@ -1,4 +1,4 @@
-name = "api-worker"
+name = "aemo-api-worker"
 compatibility_date = "2025-03-18"
 main = "src/api/index.ts"
 account_id = "YOUR_ACCOUNT_ID"
