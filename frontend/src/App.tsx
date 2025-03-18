@@ -262,7 +262,7 @@ function isWeekend(date: Date): boolean {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-// SparklineChart Component
+// SparklineChart Component with Hover Tooltip
 ///////////////////////////////////////////////////////////////////////////
 interface SparklineChartProps {
   todayIntervals: AemoInterval[];
@@ -270,12 +270,31 @@ interface SparklineChartProps {
   region: SupportedRegion;
   scenarioKey: string;
 }
+interface DataPoint {
+  x: number;
+  y: number;
+  cost: number;
+  date: string;
+  dt: Date;
+}
 const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterdayIntervals, region, scenarioKey }) => {
   const viewBoxWidth = 500;
   const svgHeight = 60;
   const padding = 5;
-  
-  // Compute the X coordinate based on linear time scale
+
+  // First, compute overall maximum cost for both datasets for consistent scaling
+  const overallAllCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
+    EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
+  );
+  const overallMaxCost = overallAllCosts.length > 0 ? Math.max(...overallAllCosts) : 0;
+  const useLogScale = overallMaxCost > 1; // if cost > $1, use log scale
+  const offset = 1; // Offset to avoid log(0)
+  let overallMaxScaled = overallMaxCost;
+  if(useLogScale) {
+    overallMaxScaled = Math.max(...overallAllCosts.map(c => Math.log(c + offset)));
+  }
+
+  // Function to compute x coordinate (linear time scale based on viewBox)
   const computeX = (dt: Date, base: Date): number => {
     const diff = dt.getTime() - base.getTime();
     const fraction = diff / (24 * 60 * 60 * 1000);
@@ -283,25 +302,15 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   };
 
   /**
-   * Compute SVG polyline points for a group of intervals.
-   * 
-   * Added improvement: if the maximum cost is above $1, a logarithmic transformation
-   * is applied (using an offset of 1) to compress outlier spikes while still showing
-   * lower values with more context.
+   * Compute SVG polyline points and corresponding data for tooltips.
+   *
+   * @param intervals The set of AEMO intervals.
+   * @param base The base time for the 24h period.
+   * @returns An object containing a polyline points string and an array of data points.
    */
-  const computePoints = (intervals: AemoInterval[], base: Date): string => {
-    const allCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
-      EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
-    );
-    const maxCost = allCosts.length > 0 ? Math.max(...allCosts) : 0;
-    const useLogScale = maxCost > 1; // Use log scale if max cost > $1
-    const offset = 1; // Offset added to cost for log transformation to avoid log(0)
-    let maxScaled = maxCost;
-    if(useLogScale) {
-      const allScaled = allCosts.map(c => Math.log(c + offset));
-      maxScaled = Math.max(...allScaled);
-    }
-    return intervals.map(iv => {
+  const computePointsAndData = (intervals: AemoInterval[], base: Date): { polyline: string, data: DataPoint[] } => {
+    const dataPoints: DataPoint[] = [];
+    const polyline = intervals.map(iv => {
       const dt = new Date(iv.SETTLEMENTDATE + '+10:00');
       const retailRate = getRetailRateFromInterval(iv, region, false, true);
       const cost = EnergyScenarios.getCostForScenario(scenarioKey, retailRate);
@@ -310,33 +319,49 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
       if(useLogScale) {
         scaledValue = Math.log(cost + offset);
       }
-      const y = svgHeight - padding - ((scaledValue / (maxScaled || 1)) * (svgHeight - 2 * padding));
-      console.log(`SparklineChart Data point: SETTLEMENTDATE=${iv.SETTLEMENTDATE}, Parsed Date=${dt}, retailRate=${retailRate.toFixed(3)} c/kWh, cost=${cost.toFixed(4)} $, scaledValue=${scaledValue.toFixed(4)}, x=${x.toFixed(2)}, y=${y.toFixed(2)}`);
+      const y = svgHeight - padding - ((scaledValue / (useLogScale ? overallMaxScaled : (overallMaxCost || 1))) * (svgHeight - 2 * padding));
+      dataPoints.push({ x, y, cost, date: iv.SETTLEMENTDATE, dt });
       return `${x},${y}`;
     }).join(' ');
+    return { polyline, data: dataPoints };
   };
 
-  // For the chart, we set the base time for each line at the start of each 24h period.
+  // Base times for current (recent) and previous 24-hour periods
   const recentPeriodBase = new Date(new Date().getTime() - 24 * 60 * 60 * 1000);
   const previousPeriodBase = new Date(new Date().getTime() - 48 * 60 * 60 * 1000);
 
-  const todayPoints = computePoints(todayIntervals, recentPeriodBase);
-  const yesterdayPoints = computePoints(yesterdayIntervals, previousPeriodBase);
+  // Compute points for today's and yesterday's intervals
+  const todayData = computePointsAndData(todayIntervals, recentPeriodBase);
+  const yesterdayData = computePointsAndData(yesterdayIntervals, previousPeriodBase);
 
-  // Compute overall maximum cost for reference line.
-  const overallAllCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
-    EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
-  );
-  const overallMaxCost = overallAllCosts.length > 0 ? Math.max(...overallAllCosts) : 0;
-  const useLogScale = overallMaxCost > 1;
-  const offset = 1;
-  let overallMaxScaled = overallMaxCost;
-  if(useLogScale) {
-    overallMaxScaled = Math.max(...overallAllCosts.map(c => Math.log(c + offset)));
-  }
+  // Compute y reference line for the maximum (using overall scaling)
   const yRef = svgHeight - padding - (((useLogScale ? Math.log(overallMaxCost + offset) : overallMaxCost) / (useLogScale ? overallMaxScaled : (overallMaxCost || 1))) * (svgHeight - 2 * padding));
 
-  // Build final chart data object
+  // Hover state for showing extra tooltip data
+  const [hoveredPoint, setHoveredPoint] = useState<DataPoint | null>(null);
+  const svgRef = React.useRef<SVGSVGElement>(null);
+
+  // Handle mouse move over the SVG -- use today's data for tooltip
+  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement, MouseEvent>) => {
+    if (!svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    // Convert mouse x coordinate to viewBox coordinate
+    const mouseX = ((e.clientX - rect.left) / rect.width) * viewBoxWidth;
+    if (todayData.data.length === 0) return;
+    let nearest = todayData.data[0];
+    let minDist = Math.abs(nearest.x - mouseX);
+    todayData.data.forEach(pt => {
+      const dist = Math.abs(pt.x - mouseX);
+      if(dist < minDist) { minDist = dist; nearest = pt; }
+    });
+    setHoveredPoint(nearest);
+  };
+
+  const handleMouseLeave = () => {
+    setHoveredPoint(null);
+  };
+
+  // Build final chart data object (for debugging)
   const chartData = {
     today: todayIntervals.map(iv => ({
       date: iv.SETTLEMENTDATE,
@@ -346,28 +371,42 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
       date: iv.SETTLEMENTDATE,
       cost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
     })),
-    todayPoints,
-    yesterdayPoints
+    todayPoints: todayData.polyline,
+    yesterdayPoints: yesterdayData.polyline
   };
   console.log("SparklineChart - Final Chart Data Object:", JSON.stringify(chartData, null, 2));
 
   return (
     <Box mt={2}>
       <Typography variant="subtitle2">
-        24‑Hour Trend (Recent 24h in blue, Previous 24h in grey){useLogScale ? " (Log Scale Applied)" : ""}
+        Previous Two Days
       </Typography>
-      <svg width="100%" viewBox={`0 0 ${viewBoxWidth} ${svgHeight}`} aria-label="24-hour scenario cost trend">
-        {yesterdayIntervals.length > 0 && (
-          <polyline fill="none" stroke="#888888" strokeWidth="2" points={yesterdayPoints} />
-        )}
-        {todayIntervals.length > 0 && (
-          <polyline fill="none" stroke="#1976d2" strokeWidth="2" points={todayPoints} />
-        )}
-        <line x1={padding} y1={yRef} x2={viewBoxWidth - padding} y2={yRef} stroke="#ff0000" strokeDasharray="4" strokeWidth="1" />
-        <text x={padding + 2} y={yRef - 2} fill="#ff0000" fontSize="10">
-          Max: {formatCurrency(overallMaxCost)}
-        </text>
-      </svg>
+      {/* Wrap SVG in Box relative container to allow positioning of tooltip */}
+      <Box position="relative">
+        <svg ref={svgRef} width="100%" viewBox={`0 0 ${viewBoxWidth} ${svgHeight}`} aria-label="24-hour scenario cost trend" onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
+          {yesterdayIntervals.length > 0 && (
+            <polyline fill="none" stroke="#888888" strokeWidth="2" points={yesterdayData.polyline} />
+          )}
+          {todayIntervals.length > 0 && (
+            <polyline fill="none" stroke="#1976d2" strokeWidth="2" points={todayData.polyline} />
+          )}
+          <line x1={padding} y1={yRef} x2={viewBoxWidth - padding} y2={yRef} stroke="#ff0000" strokeDasharray="4" strokeWidth="1" />
+          <text x={padding + 2} y={yRef - 2} fill="#ff0000" fontSize="10">
+            Max: {formatCurrency(overallMaxCost)}
+          </text>
+          {hoveredPoint && (
+            <>
+              {/* Circle marker for hovered point */}
+              <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r="3" fill="#000" stroke="#fff" strokeWidth="1" />
+              {/* Tooltip text; placed a bit offset from the marker */}
+              <text x={hoveredPoint.x + 5} y={hoveredPoint.y - 5} fill="#000" fontSize="10" style={{ pointerEvents: 'none' }}>
+                {new Date(hoveredPoint.date + '+10:00').toLocaleTimeString('en-AU', { timeZone: 'Australia/Brisbane', hour: '2-digit', minute: '2-digit' })}
+                {": "}{formatCurrency(hoveredPoint.cost)}
+              </text>
+            </>
+          )}
+        </svg>
+      </Box>
     </Box>
   );
 };
