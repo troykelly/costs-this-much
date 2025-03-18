@@ -201,9 +201,10 @@ export class AemoData implements DurableObject {
       });
     }
 
-    // Convert raw records to our intervals structure
+    // Convert raw records to our intervals structure,
+    // incorporating a parse function to ensure correct offset for AEMO time.
     const intervals: AemoInterval[] = data["5MIN"].map((item) => {
-      const settlementTs = Math.floor(Date.parse(item.SETTLEMENTDATE) / 1000);
+      const settlementTs = this.parseAemoDate(item.SETTLEMENTDATE);
       return {
         settlementdate: item.SETTLEMENTDATE,
         settlement_ts: settlementTs,
@@ -285,7 +286,10 @@ export class AemoData implements DurableObject {
     this.log("INFO", "Step 5: Inserting or updating records (upsert) in the database...");
     let upsertCount = 0;
     for (const interval of intervals) {
-      this.log("DEBUG", `Upserting interval: settlement_ts=${interval.settlement_ts}, regionid=${interval.regionid}`);
+      this.log(
+        "DEBUG", 
+        `Upserting interval: settlement_ts=${interval.settlement_ts}, regionid=${interval.regionid}`
+      );
       const cursor = this.sql.exec<IntervalRecord>(
         `
         INSERT INTO aemo_five_min_data (
@@ -339,6 +343,22 @@ export class AemoData implements DurableObject {
     } catch {
       return {};
     }
+  }
+
+  /**
+   * Convert AEMO settlement date into a Unix epoch (in seconds) with an assumed
+   * offset for Australian Eastern time. This approach is simplistic and does
+   * not dynamically account for Daylight Saving Time transitions.
+   *
+   * @param dateStr AEMO-supplied settlement date string
+   * @return The Unix epoch (seconds) adjusted for approximate AEMO offset
+   */
+  private parseAemoDate(dateStr: string): number {
+    // The following creates a date by appending 'GMT+10' to interpret as AEST.
+    // A more robust approach would handle DST programmatically or parse the
+    // date/time correctly if the API includes timezone info. 
+    const ms = Date.parse(`${dateStr} GMT+10`);
+    return Math.floor(ms / 1000);
   }
 
   /**
