@@ -5,7 +5,6 @@
   },
   "workspaces": [
     "frontend",
-    "workers/aemo-data-logger",
-    "workers/api"
+    "workers/aemo-data-logger"
   ]
 }

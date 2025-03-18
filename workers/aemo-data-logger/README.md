@@ -69,7 +69,9 @@ Key endpoints (placeholders):
    - Prepare a local environment and run:  
      yarn dev:logger
    - This uses “wrangler.logger.toml” and follows the code in “src/index.ts”.  
-   - Note: Cron triggers are not automatically fired locally; you can invoke them manually or rely on console/fetch testing.
+   - Note: Cron triggers are not automatically fired locally; you can invoke them manually or rely on console/fetch testing.  
+   - Additionally, to manually trigger a data sync in local development, you can send a POST request to the Worker at “/trigger”. For example:
+     curl -X POST http://127.0.0.1:8787/trigger
 
 3. **Run API Mode**  
    - To start the API in local dev mode, run:  
@@ -85,11 +87,11 @@ Key endpoints (placeholders):
 ## Publishing
 
 • **Logger**:  
-  yarn publish:logger
+  yarn publish:logger  
   Deploys the scheduled Worker that retrieves data from AEMO.
 
 • **API**:  
-  yarn publish:api
+  yarn publish:api  
   Deploys the authentication and data retrieval API.  
 
 --------------------------------------------------------------------------------
@@ -109,25 +111,17 @@ Both modes rely on environment variables set in their respective “wrangler.*.t
 
 ## Outstanding Tasks
 
-1. **Complete Data Fetch Logic**  
-   - The `src/index.ts` currently has a stub for syncing data. You need to fetch the correct intervals from AEMO, parse them, and insert the missing records into the Durable Object.  
-
+1. **Complete Data Fetch Logic** (Completed)  
 2. **Implement Real Error Handling**  
-   - Handle partial outages, repeated failures, and data validation. Possibly requeue or log errors for future reprocessing.  
-
+   - Properly handle network or data inaccuracies. Possibly re-fetch on failures.  
 3. **Proper Token Signing/Verification**  
-   - Replace the “FAKE” token placeholders in “src/api/jwtSupport.ts” with a real signing algorithm (e.g., RS256 via `jsonwebtoken` in the Workers runtime).  
-   - Validate keys properly, parse the public key as JWK for the JWKS endpoint.  
-
+   - Replace the “FAKE” token placeholders in “src/api/jwtSupport.ts” with a real signing algorithm.  
 4. **Enhance Data Retrieval**  
-   - In “API Mode,” the “/data” endpoint is stubbed. Implement logic to query intervals from the DO’s SQL storage, filter based on date range, and return the results.  
-
+   - In “API Mode,” the “/data” endpoint is stubbed. Implement logic to query intervals.  
 5. **Add Security Layers**  
-   - Restrict or throttle repeated requests, protect from injection or rate-limits, and ensure the DO fetch calls are properly validated.  
-
+   - Restrict or throttle repeated requests, protect from injection or rate-limits, etc.  
 6. **Performance Monitoring & Alerts**  
-   - Evaluate how to handle large volumes of data or potential latency spikes in reading from AEMO.  
-   - Use logs, alerts, or Cloudflare analytics to detect errors quickly.  
+   - Evaluate how to handle large volumes of data or potential latency spikes.  
 
 --------------------------------------------------------------------------------
 

@@ -4,11 +4,18 @@ main = "src/api/index.ts"
 account_id = "YOUR_ACCOUNT_ID"
 workers_dev = true
 
-[[durable_objects]]
-name = "AemoDataDO"
-class_name = "AemoDataDurableObject"
-type = "sql"
-script_name = "aemo-data-logger"
+# Wrangler version 3 (v3) format for Durable Objects:
+[durable_objects]
+  bindings = [
+    { name = "AEMO_DATA", class_name = "AemoData" }
+  ]
+  script_name = "aemo-data-logger"
+
+# Indicate how we store migrations for your Durable Object,
+# including an initial migration that sets up a new SQLite backend.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AemoData"]
 
 [vars]
 CLIENT_IDS = "[\"insert-some-uuid-here\", \"another-uuid-here\"]"

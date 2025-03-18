@@ -24,7 +24,7 @@ interface AemoInterval {
  * Durable Object class that manages storage of AEMO data in a Cloudflare
  * SQL-based database.
  */
-export class AemoDataDurableObject {
+export class AemoData {
   /** Reference to this Durable Object's persistent state. */
   state: DurableObjectState;
 
@@ -123,26 +123,27 @@ export class AemoDataDurableObject {
 
       // Insert new intervals, skipping duplicates.
       let insertedCount = 0;
-      sql.exec("BEGIN TRANSACTION;");
-      for (const interval of intervals) {
-        try {
-          // Attempt a plain INSERT. If a record with the same settlementdate
-          // exists, it will trigger a unique constraint error.
-          sql.exec(
-            `INSERT INTO intervals (settlementdate, regionid, rrp) VALUES (?, ?, ?)`,
-            interval.settlementdate,
-            interval.regionid,
-            interval.rrp
-          );
-          insertedCount++;
-        } catch (e: any) {
-          // If the error is due to the unique constraint, ignore. Otherwise, rethrow.
-          if (!String(e.message).includes("UNIQUE constraint failed")) {
-            throw e;
+      this.state.storage.transactionSync((txn) => {
+        const tsql = txn.sql;
+        for (const interval of intervals) {
+          try {
+            // Attempt a plain INSERT. If a record with the same settlementdate
+            // exists, it will trigger a unique constraint error.
+            tsql.exec(
+              `INSERT INTO intervals (settlementdate, regionid, rrp) VALUES (?, ?, ?)`,
+              interval.settlementdate,
+              interval.regionid,
+              interval.rrp
+            );
+            insertedCount++;
+          } catch (e: any) {
+            // If the error is due to the unique constraint, ignore. Otherwise, rethrow.
+            if (!String(e.message).includes("UNIQUE constraint failed")) {
+              throw e;
+            }
           }
         }
-      }
-      sql.exec("COMMIT;");
+      });
 
       // Summarise the operation.
       const message = `Sync completed. Fetched ${intervals.length} intervals, inserted ${insertedCount} new intervals.`;
