@@ -107,9 +107,9 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Fetches data from the configured API, parses it, then inserts intervals
-   * using INSERT OR IGNORE to skip duplicates. Logs intermediate steps if
-   * LOG_LEVEL is "INFO" or more verbose.
+   * Fetches data from the configured API, parses it, then checks for missing intervals
+   * across the discovered date range and regions, inserting only those that are missing.
+   * Logs intermediate steps at INFO/DEBUG or WARNING on failures.
    */
   private async handleSync(): Promise<Response> {
     this.log('INFO', 'Beginning data sync from AEMO...');
@@ -132,13 +132,13 @@ export class AemoData implements DurableObject {
 
     if (!resp.ok) {
       const err = await resp.text();
-      this.log('ERROR', `AEMO API error ${resp.status}: ${err}`);
+      this.log('WARNING', `AEMO API error ${resp.status}: ${err}`);
       return new Response(`AEMO API error ${resp.status}: ${err}`, { status: 500 });
     }
 
     const data: AemoApiResponse = await resp.json();
     if (!Array.isArray(data["5MIN"])) {
-      this.log('ERROR', `Invalid or missing "5MIN" array in the AEMO response.`);
+      this.log('WARNING', `Invalid or missing "5MIN" array in the AEMO response.`);
       return new Response(`Invalid or missing "5MIN" array in AEMO response.`, { status: 500 });
     }
 
@@ -148,13 +148,57 @@ export class AemoData implements DurableObject {
       rrp: parseFloat(String(item.RRP)),
     }));
 
-    this.log('INFO', `Retrieved ${intervals.length} intervals from AEMO. Inserting...`);
+    // Step 2: Check if there's any data
+    if (intervals.length === 0) {
+      this.log('WARNING', 'No intervals found in AEMO data. Aborting.');
+      return new Response('No intervals found in AEMO data. Aborting.', { status: 200 });
+    }
+
+    // Find oldest and most recent settlementdate
+    let earliest = intervals[0].settlementdate;
+    let latest = intervals[0].settlementdate;
+    for (const i of intervals) {
+      if (i.settlementdate < earliest) earliest = i.settlementdate;
+      if (i.settlementdate > latest) latest = i.settlementdate;
+    }
+    this.log('DEBUG', `Earliest settlement date: ${earliest}, latest settlement date: ${latest}`);
+
+    // Step 3: Generate list of unique regions
+    const regionSet = new Set<string>();
+    for (const i of intervals) {
+      regionSet.add(i.regionid);
+    }
+    this.log('DEBUG', `Unique regions found: ${Array.from(regionSet).join(', ')}`);
+
+    this.log('INFO', `Retrieved ${intervals.length} intervals from AEMO. Checking DB for missing data...`);
+
+    // Step 4: Check the database for missing data in the AEMO data range
+    const existingSet = new Set<string>();
+    for (const region of regionSet) {
+      const existingRows = this.sql.exec<IntervalRecord>(
+        `SELECT settlementdate, regionid FROM intervals
+         WHERE settlementdate >= ? AND settlementdate <= ?
+           AND regionid = ?`,
+        earliest,
+        latest,
+        region
+      );
+      for (const row of existingRows) {
+        if (row.settlementdate && row.regionid) {
+          existingSet.add(`${row.regionid}|${row.settlementdate}`);
+        }
+      }
+    }
+
+    // Step 5: Insert those records that are missing
+    const missing = intervals.filter(i => {
+      return !existingSet.has(`${i.regionid}|${i.settlementdate}`);
+    });
+    this.log('INFO', `Found ${missing.length} intervals missing out of ${intervals.length} total.`);
 
     let insertedCount = 0;
-    for (const interval of intervals) {
-      // If log level is DEBUG, log each record being inserted
+    for (const interval of missing) {
       this.log('DEBUG', `Inserting interval: settlementdate=${interval.settlementdate}, regionid=${interval.regionid}, rrp=${interval.rrp}`);
-
       const cursor = this.sql.exec<IntervalRecord>(
         `INSERT OR IGNORE INTO intervals (settlementdate, regionid, rrp) VALUES (?, ?, ?)`,
         interval.settlementdate,
