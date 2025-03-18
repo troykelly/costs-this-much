@@ -5,11 +5,12 @@
  *
  * Updated (18 March 2025):
  * • Production-ready interface (no example placeholders/timeframes).  
- * • Modern layout with a 5-box row at the top, left-aligned:  
- *   - The first box (triple width) shows region info + map/icon.  
- *   - The remaining 4 boxes show Current Wholesale, Current Retail, Cheapest Rate, and Most Expensive Rate.  
- * • A small inline region map SVG is displayed based on the region.  
- * • Other sections (Other Regions, scenario/assumptions, daily summaries) are centre-aligned.  
+ * • Modern layout changes for the header and info boxes as requested:
+ *   - Full-width heading in a modern shade of blue, no margins.  
+ *   - Region name in the heading’s background colour, bold.  
+ *   - Other text in dark grey, numeric values in bold black with a larger font size.  
+ *   - The info boxes do not fill the entire width; a vertical line separates each. No box borders.  
+ *   - White background for the main area.  
  *
  * Author: Troy Kelly <troy@troykelly.com>
  * Original: 16 March 2025
@@ -58,6 +59,17 @@ import ElectricBoltIcon from '@mui/icons-material/ElectricBolt';
 import { AemoInterval, getRetailRateFromInterval, SupportedRegion } from './pricingCalculator';
 import { EnergyScenarios } from './energyScenarios';
 import statesData from '../data/au-states.json';
+
+/**
+ * Maps region keys to a more descriptive string for display.
+ */
+const regionNameMap: Record<string, string> = {
+  nsw: 'New South Wales',
+  qld: 'Queensland',
+  vic: 'Victoria',
+  sa: 'South Australia',
+  tas: 'Tasmania'
+};
 
 /**
  * Formats a number into Australian currency using Intl.NumberFormat.
@@ -161,12 +173,9 @@ function mapStateNameToRegionKey(stateName: string): string | null {
 }
 
 /**
- * Minimal inline region map icons - placeholder shapes for each region.
- * Extend or refine as desired.
+ * Minimal inline region map icons (placeholder shapes for each region).
  */
 function getRegionSvg(region: string): string {
-  // For brevity, we provide a few inline placeholders.
-  // Ensure you have valid minimal path data (not accurate outlines).
   const svgs: Record<string, string> = {
     nsw: '<svg width="80" height="60" viewBox="0 0 80 60" xmlns="http://www.w3.org/2000/svg"><path d="M10 10 L70 10 L70 30 L50 50 L10 40 Z" fill="lightblue" stroke="#333" stroke-width="2"/></svg>',
     qld: '<svg width="80" height="60" viewBox="0 0 80 60" xmlns="http://www.w3.org/2000/svg"><path d="M20 5 L60 15 L75 35 L35 55 L15 35 Z" fill="lightblue" stroke="#333" stroke-width="2"/></svg>',
@@ -283,7 +292,8 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
           p: 1,
           maxWidth: '100%',
           margin: '0 auto',
-          display: 'inline-block'
+          display: 'inline-block',
+          backgroundColor: '#fff'
         }}
       >
         <svg
@@ -341,7 +351,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
  */
 function ScenarioNotFound({ scenarioKey }: { scenarioKey: string }): JSX.Element {
   return (
-    <Box display="flex" flexDirection="column" height="100vh" alignItems="center" justifyContent="center" textAlign="center" bgcolor="#fafafa">
+    <Box display="flex" flexDirection="column" height="100vh" alignItems="center" justifyContent="center" textAlign="center" bgcolor="#ffffff">
       <Typography variant="h3" gutterBottom>404 - Scenario Not Found</Typography>
       <Typography variant="body1">
         The requested scenario "{scenarioKey}" does not exist.
@@ -372,7 +382,7 @@ export function AboutPage(_: AboutPageProps): JSX.Element {
   }, []);
 
   return (
-    <Box display="flex" flexDirection="column" minHeight="100vh" p={2}>
+    <Box display="flex" flexDirection="column" minHeight="100vh" p={2} bgcolor="#ffffff">
       <Typography variant="h4" gutterBottom>About This Site</Typography>
       <Typography variant="body1" paragraph>
         This site aims to help people understand the dynamic nature of electricity pricing.
@@ -417,7 +427,7 @@ const App: React.FC = () => {
 
   const isDevMode = window.location.hostname.includes('localhost') || window.location.hostname.includes('127.');
 
-  // Region from path
+  // Determine region from path
   const pathParts = window.location.pathname.split('/');
   const regionKey = pathParts[1]?.toLowerCase() || 'nsw';
 
@@ -437,7 +447,7 @@ const App: React.FC = () => {
     return <ScenarioNotFound scenarioKey={scenarioKeyStr} />;
   }
 
-  // Region mapping
+  // Region mapping for the AEMO intervals
   const regionMapping: Record<string, string> = {
     nsw: 'NSW1',
     qld: 'QLD1',
@@ -447,7 +457,7 @@ const App: React.FC = () => {
   };
   const regionFilter = regionMapping[regionKey] ?? 'NSW1';
 
-  // Meta tags
+  // Page meta tags
   useEffect(() => {
     const scenarioTitle = scenarioData.name;
     const regionUpper = regionKey.toUpperCase();
@@ -501,15 +511,19 @@ const App: React.FC = () => {
       const regData: AemoInterval[] = data['5MIN'].filter(iv => iv.REGIONID === regionFilter);
       regData.sort((a, b) => new Date(a.SETTLEMENTDATE).getTime() - new Date(b.SETTLEMENTDATE).getTime());
       setRegionIntervals(regData);
+
       if (regData.length > 0) {
         const latest = regData[regData.length - 1];
         let wholesale = latest.RRP * 0.1;
         if (wholesale < 0) wholesale = 0;
         setRrpCentsPerKWh(wholesale);
+
         const computedRate = getRetailRateFromInterval(latest, regionKey as SupportedRegion, false, true);
         setFinalRateCents(computedRate);
+
         const cost = EnergyScenarios.getCostForScenario(scenarioKeyStr, computedRate);
         setToastCostDollars(cost);
+
         setUsedIntervalDate(latest.SETTLEMENTDATE);
       } else {
         setRrpCentsPerKWh(0);
@@ -532,7 +546,7 @@ const App: React.FC = () => {
     return () => clearInterval(intervalId);
   }, [regionFilter, scenarioKeyStr]);
 
-  // 24/24 intervals
+  // For last 48 hours usage
   function getBrisbaneNow(): Date {
     const now = new Date();
     const brisbaneOffsetMinutes = 10 * 60;
@@ -619,89 +633,139 @@ const App: React.FC = () => {
   const otherRegions = Object.keys(regionMapping).filter(r => r !== regionKey);
 
   return (
-    <Box display="flex" flexDirection="column" minHeight="100vh" bgcolor="#fafafa">
-      {/* Top header bar */}
+    <Box display="flex" flexDirection="column" minHeight="100vh" bgcolor="#ffffff">
+      {/* Top header bar: modern blue, no margins */}
       <Box
         sx={{
-          backgroundColor: '#EEE',
-          padding: 2,
-          textAlign: 'center',
-          borderBottom: '1px solid #CCC'
+          backgroundColor: '#2196f3',
+          margin: 0,
+          padding: '0.75rem 0',
+          textAlign: 'center'
         }}
       >
-        <Typography variant="h5" sx={{ display: 'inline-flex', alignItems: 'center', fontWeight: 'bold' }}>
+        <Typography
+          variant="h5"
+          sx={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            fontWeight: 'bold',
+            color: '#fff'
+          }}
+        >
           <ElectricBoltIcon fontSize="large" sx={{ marginRight: 1 }} />
           Power Costs This Much!
         </Typography>
       </Box>
 
-      {/* The 5-box row, left-aligned */}
-      <Box sx={{ p: 2, borderBottom: '1px solid #CCC' }}>
-        <Box sx={{ display: 'flex', flexDirection: 'row', gap: 1 }}>
-          {/* 1) FIRST BOX triple width: region name + map + potential timestamp */}
+      {/* Info boxes area */}
+      <Box sx={{ borderBottom: '1px solid #CCC', backgroundColor: '#fff', padding: '1rem' }}>
+        <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center' }}>
+          {/* Region + map box with right border */}
           <Box
             sx={{
-              flex: 3,
-              border: '1px solid #CCC',
-              padding: 1,
               display: 'flex',
               flexDirection: 'column',
-              alignItems: 'start'
+              borderRight: '1px solid #CCC',
+              paddingRight: '1rem',
+              marginRight: '1rem'
             }}
           >
-            <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
-              {regionKey.toUpperCase()}
+            {/* Full region name in the heading color, bold */}
+            <Typography
+              sx={{
+                fontWeight: 'bold',
+                color: '#2196f3'
+              }}
+            >
+              {regionNameMap[regionKey] || regionKey.toUpperCase()}
             </Typography>
+
             <Box
               sx={{ mt: 1 }}
               dangerouslySetInnerHTML={{ __html: getRegionSvg(regionKey) }}
             />
-            <Typography variant="caption" sx={{ mt: 1 }}>
-              {usedIntervalDate ? `Last interval: ${formatIntervalDate(usedIntervalDate)}` : 'No interval data'}
-            </Typography>
+
+            {usedIntervalDate && (
+              <Typography variant="caption" sx={{ mt: 1, color: '#555' }}>
+                Last interval: {formatIntervalDate(usedIntervalDate)}
+              </Typography>
+            )}
           </Box>
 
-          {/* 2) CURRENT WHOLESALE */}
-          <Box sx={{ flex: 1, border: '1px solid #CCC', padding: 1 }}>
-            <Typography variant="subtitle2">Current<br />Wholesale</Typography>
-            {loading
-              ? <CircularProgress size="1rem" />
-              : <Typography variant="body2">{(rrpCentsPerKWh / 100).toFixed(3)} $/kWh</Typography>
-            }
-          </Box>
+          {/* Additional items in row */}
+          <Box sx={{ display: 'flex', flexDirection: 'row' }}>
+            {/* 1) Current Wholesale */}
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                borderRight: '1px solid #CCC',
+                marginRight: '1rem',
+                paddingRight: '1rem'
+              }}
+            >
+              <Typography sx={{ color: '#666' }}>Current< br/>Wholesale</Typography>
+              {loading ? (
+                <CircularProgress size="1rem" />
+              ) : (
+                <Typography sx={{ fontWeight: 'bold', color: '#000', fontSize: '1.5rem' }}>
+                  {(rrpCentsPerKWh / 100).toFixed(2)} $/kWh
+                </Typography>
+              )}
+            </Box>
 
-          {/* 3) CURRENT RETAIL */}
-          <Box sx={{ flex: 1, border: '1px solid #CCC', padding: 1 }}>
-            <Typography variant="subtitle2">Current<br />Retail</Typography>
-            {loading
-              ? <CircularProgress size="1rem" />
-              : <Typography variant="body2">{(finalRateCents / 100).toFixed(3)} $/kWh</Typography>
-            }
-          </Box>
+            {/* 2) Current Retail */}
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                borderRight: '1px solid #CCC',
+                marginRight: '1rem',
+                paddingRight: '1rem'
+              }}
+            >
+              <Typography sx={{ color: '#666' }}>Current< br/>Retail</Typography>
+              {loading ? (
+                <CircularProgress size="1rem" />
+              ) : (
+                <Typography sx={{ fontWeight: 'bold', color: '#000', fontSize: '1.5rem' }}>
+                  {(finalRateCents / 100).toFixed(2)} $/kWh
+                </Typography>
+              )}
+            </Box>
 
-          {/* 4) CHEAPEST RATE */}
-          <Box sx={{ flex: 1, border: '1px solid #CCC', padding: 1 }}>
-            <Typography variant="subtitle2">Cheapest</Typography>
-            <Typography variant="body2">
-              {lowestScenario.cost > 0
-                ? formatCurrency(lowestScenario.cost)
-                : '$0.00'}
-            </Typography>
-          </Box>
+            {/* 3) Cheapest Rate */}
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                borderRight: '1px solid #CCC',
+                marginRight: '1rem',
+                paddingRight: '1rem'
+              }}
+            >
+              <Typography sx={{ color: '#666' }}>Cheapest</Typography>
+              <Typography sx={{ fontWeight: 'bold', color: '#000', fontSize: '1.5rem' }}>
+                {lowestScenario.cost > 0
+                  ? formatCurrency(lowestScenario.cost)
+                  : '$0.00'}
+              </Typography>
+            </Box>
 
-          {/* 5) MOST EXPENSIVE RATE */}
-          <Box sx={{ flex: 1, border: '1px solid #CCC', padding: 1 }}>
-            <Typography variant="subtitle2">Most<br />Expensive</Typography>
-            <Typography variant="body2">
-              {highestScenario.cost > 0
-                ? formatCurrency(highestScenario.cost)
-                : '$0.00'}
-            </Typography>
+            {/* 4) Most Expensive */}
+            <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+              <Typography sx={{ color: '#666' }}>Most< br/>Expensive</Typography>
+              <Typography sx={{ fontWeight: 'bold', color: '#000', fontSize: '1.5rem' }}>
+                {highestScenario.cost > 0
+                  ? formatCurrency(highestScenario.cost)
+                  : '$0.00'}
+              </Typography>
+            </Box>
           </Box>
         </Box>
 
-        {/* Refresh button below the row */}
-        <Box mt={1}>
+        {/* Refresh button */}
+        {/* <Box mt={1}>
           <Tooltip title="Refresh Data">
             <IconButton onClick={fetchAemoData}>
               <RefreshIcon />
@@ -716,39 +780,34 @@ const App: React.FC = () => {
               {error}
             </Alert>
           )}
-        </Box>
+        </Box> */}
       </Box>
 
       {/* Body main content */}
-      <Box sx={{ p: 2, flexGrow: 1 }}>
+      <Box sx={{ p: 2, flexGrow: 1, backgroundColor: '#fff' }}>
         {/* Big cost in centre */}
         <Box textAlign="center" mt={2}>
-          <Typography variant="h6" gutterBottom>
+          <Typography variant="h6" gutterBottom sx={{ color: '#444' }}>
             A {scenarioData.name.toLowerCase()} currently costs
           </Typography>
           {loading ? (
             <Box display="inline-flex" flexDirection="column" alignItems="center" mt={2}>
               <CircularProgress />
-              <Typography variant="body2" mt={1}>Loading…</Typography>
+              <Typography variant="body2" mt={1} sx={{ color: '#444' }}>Loading…</Typography>
             </Box>
           ) : (
-            <Typography variant="h2" sx={{ fontWeight: 'bold', lineHeight: 1 }}>
+            <Typography variant="h2" sx={{ fontWeight: 'bold', lineHeight: 1, color: '#000' }}>
               {formatCurrency(toastCostDollars)}
             </Typography>
           )}
-          <Typography variant="body2" mt={1}>
+          <Typography variant="body2" mt={1} sx={{ color: '#555' }}>
             {usedIntervalDate ? `@ ${formatIntervalDate(usedIntervalDate)}` : ''}
           </Typography>
         </Box>
 
-        {/* Cheapest / Expensive boxes (already in the header row, so skip additional?) 
-            The user ASCII shows them bigger in the center - let's preserve the simpler approach. 
-            We'll skip repeating. 
-        */}
-
         {/* Other regions (centered) */}
         <Box textAlign="center" mt={3}>
-          <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 'bold' }}>
+          <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 'bold', color: '#444' }}>
             Other Regions
           </Typography>
           <Box sx={{ display: 'inline-flex', gap: 1 }}>
@@ -779,6 +838,7 @@ const App: React.FC = () => {
                 const cost = item.cost;
                 let tag: ReactNode = null;
                 if (cost === minVal && minVal === maxVal) {
+                  // only if everything is same
                   tag = <Chip label="CHEAP & EXP" icon={<StarIcon />} color="warning" size="small" sx={{ mt: 1 }} />;
                 } else if (cost === minVal) {
                   tag = <Chip label="CHEAP" icon={<StarIcon />} color="success" size="small" sx={{ mt: 1 }} />;
@@ -788,12 +848,21 @@ const App: React.FC = () => {
                 return (
                   <Card
                     key={item.region}
-                    sx={{ cursor: 'pointer', minWidth: 80, margin: 1 }}
+                    sx={{
+                      cursor: 'pointer',
+                      minWidth: 80,
+                      margin: 1,
+                      backgroundColor: '#fff'
+                    }}
                     onClick={() => handleRegionClick(item.region.toLowerCase())}
                   >
                     <CardContent sx={{ textAlign: 'center' }}>
-                      <Typography variant="body1" sx={{ fontWeight: 'bold' }}>{item.region}</Typography>
-                      <Typography variant="body2">{formatCurrency(item.cost)}</Typography>
+                      <Typography variant="body1" sx={{ fontWeight: 'bold', color: '#444' }}>
+                        {item.region}
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 'bold', color: '#000', fontSize: '1.1rem' }}>
+                        {formatCurrency(item.cost)}
+                      </Typography>
                       {tag}
                     </CardContent>
                   </Card>
@@ -828,12 +897,12 @@ const App: React.FC = () => {
         {scenarioData.assumptions && scenarioData.assumptions.length > 0 && (
           <Box mt={3} textAlign="center">
             <Box sx={{ display: 'inline-block', maxWidth: 480, width: '100%' }}>
-              <Card>
+              <Card sx={{ backgroundColor: '#fff' }}>
                 <CardContent>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 'bold', color: '#444' }}>
                     Assumptions
                   </Typography>
-                  <ul style={{ textAlign: 'left' }}>
+                  <ul style={{ textAlign: 'left', color: '#444' }}>
                     {scenarioData.assumptions.map((ass, i) => (
                       <li key={i}>
                         <Typography variant="body2">{ass}</Typography>
@@ -861,13 +930,15 @@ const App: React.FC = () => {
           <Box sx={{ display: 'inline-block', maxWidth: 480, width: '100%' }}>
             <Accordion>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 'bold', color: '#444' }}>
                   Daily Summaries
                 </Typography>
               </AccordionSummary>
               <AccordionDetails>
                 {dailySummaries.length === 0 ? (
-                  <Typography variant="body2">No daily summary data available.</Typography>
+                  <Typography variant="body2" sx={{ color: '#444' }}>
+                    No daily summary data available.
+                  </Typography>
                 ) : (
                   <TableContainer component={Paper}>
                     <Table size="small">
@@ -907,10 +978,11 @@ const App: React.FC = () => {
           borderTop: '1px solid #CCC',
           p: 2,
           textAlign: 'center',
-          mt: 'auto'
+          mt: 'auto',
+          backgroundColor: '#fff'
         }}
       >
-        <Typography variant="body2" sx={{ mb: 1 }}>
+        <Typography variant="body2" sx={{ mb: 1, color: '#444' }}>
           CC0 1.0 Universal |{' '}
           <Link href="/about" style={{ marginRight: 8 }}>
             About
@@ -925,7 +997,7 @@ const App: React.FC = () => {
             My Location
           </Button>
         </Typography>
-        <Typography variant="caption" display="block">
+        <Typography variant="caption" display="block" sx={{ color: '#444' }}>
           Data sourced from{' '}
           <Link href="https://www.aemo.com.au" target="_blank" rel="noopener noreferrer">
             AEMO
