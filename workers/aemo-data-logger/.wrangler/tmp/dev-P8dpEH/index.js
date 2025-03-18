@@ -2,15 +2,33 @@ var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
 // src/AemoDataDurableObject.ts
+function getLogPriority(level) {
+  switch (level.toUpperCase()) {
+    case "DEBUG":
+      return 1;
+    case "INFO":
+      return 2;
+    case "WARN":
+      return 3;
+    case "ERROR":
+      return 4;
+    default:
+      return 99;
+  }
+}
+__name(getLogPriority, "getLogPriority");
 var AemoData = class {
   /**
-   * Constructs the DO, assigning Cloudflare’s SQL storage to "this.sql".
-   * Immediately creates the "intervals" table if it doesn’t exist.
+   * Constructs the DO, assigning Cloudflare’s SQL storage to "this.sql" and
+   * immediately creating the table if it doesn’t exist. Reads LOG_LEVEL from
+   * the environment to control debugging verbosity.
    */
   constructor(state, env) {
     this.state = state;
     this.sql = state.storage.sql;
     this.env = env;
+    const configuredLevel = env.LOG_LEVEL ?? "WARN";
+    this.logLevel = getLogPriority(configuredLevel);
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS intervals (
         settlementdate TEXT PRIMARY KEY,
@@ -18,15 +36,13 @@ var AemoData = class {
         rrp NUMERIC
       );
     `);
+    this.log("INFO", `AemoData DO constructed with LOG_LEVEL="${configuredLevel}".`);
   }
   static {
     __name(this, "AemoData");
   }
   /**
-   * The DO responds to POST /sync by:
-   * 1) Fetching data from AEMO_API_URL with a body of { timeScale: ["5MIN"] }.
-   * 2) Parsing the "5MIN" array.
-   * 3) Inserting intervals using INSERT OR IGNORE to skip duplicates.
+   * The DO responds to POST /sync by fetching data from AEMO, then storing intervals in the table.
    */
   async fetch(request) {
     const url = new URL(request.url);
@@ -36,12 +52,17 @@ var AemoData = class {
     return new Response("Not Found", { status: 404 });
   }
   /**
-   * Makes a POST to AEMO_API_URL, converts response to typed intervals,
-   * then inserts them into the table, ignoring duplicates.
+   * Fetches data from the configured API, parses it, then inserts intervals
+   * using INSERT OR IGNORE to skip duplicates. Logs intermediate steps if
+   * LOG_LEVEL is "INFO" or more verbose.
    */
   async handleSync() {
+    this.log("INFO", "Beginning data sync from AEMO...");
     const requestBody = { timeScale: ["5MIN"] };
     const headers = this.parseHeaders(this.env.AEMO_API_HEADERS);
+    this.log("DEBUG", `Posting to AEMO URL: ${this.env.AEMO_API_URL}`);
+    this.log("DEBUG", `Request headers: ${JSON.stringify(headers)}`);
+    this.log("DEBUG", `Request body: ${JSON.stringify(requestBody)}`);
     const resp = await fetch(this.env.AEMO_API_URL, {
       method: "POST",
       headers: {
@@ -52,19 +73,23 @@ var AemoData = class {
     });
     if (!resp.ok) {
       const err = await resp.text();
+      this.log("ERROR", `AEMO API error ${resp.status}: ${err}`);
       return new Response(`AEMO API error ${resp.status}: ${err}`, { status: 500 });
     }
     const data = await resp.json();
     if (!Array.isArray(data["5MIN"])) {
-      return new Response(`Invalid or missing "5MIN" array in response.`, { status: 500 });
+      this.log("ERROR", `Invalid or missing "5MIN" array in the AEMO response.`);
+      return new Response(`Invalid or missing "5MIN" array in AEMO response.`, { status: 500 });
     }
     const intervals = data["5MIN"].map((item) => ({
       settlementdate: item.SETTLEMENTDATE,
       regionid: item.REGIONID,
       rrp: parseFloat(String(item.RRP))
     }));
+    this.log("INFO", `Retrieved ${intervals.length} intervals from AEMO. Inserting...`);
     let insertedCount = 0;
     for (const interval of intervals) {
+      this.log("DEBUG", `Inserting interval: settlementdate=${interval.settlementdate}, regionid=${interval.regionid}, rrp=${interval.rrp}`);
       const cursor = this.sql.exec(
         `INSERT OR IGNORE INTO intervals (settlementdate, regionid, rrp) VALUES (?, ?, ?)`,
         interval.settlementdate,
@@ -73,13 +98,12 @@ var AemoData = class {
       );
       insertedCount += cursor.rowsWritten;
     }
-    return new Response(
-      `Synced ${intervals.length} intervals, inserted ${insertedCount} new.`,
-      { status: 200 }
-    );
+    const msg = `Sync complete. Received ${intervals.length} intervals; inserted ${insertedCount} new.`;
+    this.log("INFO", msg);
+    return new Response(msg, { status: 200 });
   }
   /**
-   * Safely parse JSON headers or return an empty object if invalid.
+   * If AEMO_API_HEADERS is invalid JSON or empty, just return an empty object.
    */
   parseHeaders(raw) {
     try {
@@ -88,16 +112,30 @@ var AemoData = class {
       return {};
     }
   }
+  /**
+   * Logs a message if the given level is at or above the configured log level.
+   */
+  log(level, message) {
+    if (getLogPriority(level) >= this.logLevel) {
+      console.log(`[${level}] ${message}`);
+    }
+  }
 };
 
 // src/index.ts
 var WORKER_INFO = `AEMO Data Logger Worker. 
-Runs on a CRON schedule, calls the DO\u2019s /sync route to ingest intervals.`;
+Runs on a CRON schedule, calls the DO\u2019s /sync route to ingest intervals. 
+Honours LOG_LEVEL in environment for additional debugging.`;
 var src_default = {
   /**
-   * Invoked by Cloudflare’s scheduler as configured in wrangler.*.toml (e.g., every 5min).
+   * Invoked by Cloudflare’s scheduler as configured in wrangler.*.toml (e.g. every 5min).
+   * Triggers the DO's /sync route to fetch and insert intervals.
    */
   async scheduled(controller, env, ctx) {
+    const logLevel = env.LOG_LEVEL ?? "WARN";
+    if (getLogPriority2(logLevel) <= getLogPriority2("INFO")) {
+      console.log(`[INFO] Scheduled event triggered. Invoking DO sync with LOG_LEVEL="${logLevel}".`);
+    }
     const id = env.AEMO_DATA.idFromName("AEMO_LOGGER");
     const stub = env.AEMO_DATA.get(id);
     await stub.fetch("https://dummy-url/sync", { method: "POST" });
@@ -106,10 +144,29 @@ var src_default = {
    * Minimal fetch handler. For local dev, you can run wrangler dev --test-scheduled
    * or call /__scheduled?cron=*+*+*+*+* to simulate the scheduled event triggers.
    */
-  async fetch(req, env, ctx) {
+  async fetch(request, env, ctx) {
+    const logLevel = env.LOG_LEVEL ?? "WARN";
+    if (getLogPriority2(logLevel) <= getLogPriority2("INFO")) {
+      console.log(`[INFO] Worker fetch handler invoked.`);
+    }
     return new Response(WORKER_INFO, { headers: { "Content-Type": "text/plain" } });
   }
 };
+function getLogPriority2(level) {
+  switch (level.toUpperCase()) {
+    case "DEBUG":
+      return 1;
+    case "INFO":
+      return 2;
+    case "WARN":
+      return 3;
+    case "ERROR":
+      return 4;
+    default:
+      return 99;
+  }
+}
+__name(getLogPriority2, "getLogPriority");
 
 // ../../../../usr/local/share/npm-global/lib/node_modules/wrangler/templates/middleware/middleware-ensure-req-body-drained.ts
 var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx) => {
@@ -168,7 +225,7 @@ var jsonError = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "jsonError");
 var middleware_miniflare3_json_error_default = jsonError;
 
-// .wrangler/tmp/bundle-NpG2Z4/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-rogMmb/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default,
   middleware_scheduled_default,
@@ -201,7 +258,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-NpG2Z4/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-rogMmb/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;

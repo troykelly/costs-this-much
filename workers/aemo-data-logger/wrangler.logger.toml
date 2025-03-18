@@ -26,3 +26,4 @@ new_sqlite_classes = ["AemoData"]
 [vars]
 AEMO_API_URL = "https://visualisations.aemo.com.au/aemo/apps/api/report/5MIN"
 AEMO_API_HEADERS = '{ "Accept": "application/json" }'
+LOG_LEVEL = 'DEBUG'
