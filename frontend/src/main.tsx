@@ -11,9 +11,20 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 
-// Automatically redirect to /nsw if user is at root path.
+const hostname = window.location.hostname;
+const isDevMode = hostname.includes('localhost') || hostname.includes('127.');
 if (window.location.pathname === '/') {
-  window.location.replace('/nsw');
+  // In dev mode (localhost) use the querystring "?s" for the scenario, defaulting to "toast"
+  if (isDevMode) {
+    window.location.replace('/nsw?s=toast');
+  } else {
+    // In production, if the hostname lacks a subdomain (only two parts) then redirect to a default subdomain "toast"
+    const parts = hostname.split('.');
+    if (parts.length === 2) {
+      window.location.replace(`toast.${hostname}/nsw`);
+    }
+    // Otherwise (hostname already has a subdomain) let the app load normally.
+  }
 }
 
 const rootElement = document.getElementById('root');
