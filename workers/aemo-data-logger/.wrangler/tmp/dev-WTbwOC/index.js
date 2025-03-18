@@ -3,141 +3,111 @@ var __name = (target, value) => __defProp(target, "name", { value, configurable:
 
 // src/AemoDataDurableObject.ts
 var AemoData = class {
+  /**
+   * Constructs the DO, assigning Cloudflare’s SQL storage to "this.sql".
+   * Immediately creates the "intervals" table if it doesn’t exist.
+   */
+  constructor(state, env) {
+    this.state = state;
+    this.sql = state.storage.sql;
+    this.env = env;
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS intervals (
+        settlementdate TEXT PRIMARY KEY,
+        regionid TEXT,
+        rrp NUMERIC
+      );
+    `);
+  }
   static {
     __name(this, "AemoData");
   }
   /**
-   * @param {DurableObjectState} state - DO state object.
-   * @param {AemoDataEnv} env - The typed environment bindings for AEMO data.
-   */
-  constructor(state, env) {
-    this.state = state;
-    this.env = env;
-  }
-  /**
-   * Handles incoming fetch events to this DO. Only supports POST /sync to perform ingestion.
-   *
-   * @param {Request} request - The incoming request.
-   * @returns {Promise<Response>} - HTTP response for success/failure.
+   * The DO responds to POST /sync by:
+   * 1) Fetching data from AEMO_API_URL with a body of { timeScale: ["5MIN"] }.
+   * 2) Parsing the "5MIN" array.
+   * 3) Inserting intervals using INSERT OR IGNORE to skip duplicates.
    */
   async fetch(request) {
     const url = new URL(request.url);
-    if (url.pathname === "/sync" && request.method === "POST") {
-      return await this.handleSync();
+    if (request.method === "POST" && url.pathname === "/sync") {
+      return this.handleSync();
     }
-    return new Response("Not found", { status: 404 });
+    return new Response("Not Found", { status: 404 });
   }
   /**
-   * Sync routine:
-   * 1) POST { timeScale: ["5MIN"] } to AEMO_API_URL.
-   * 2) Parse expected data from the "5MIN" property in the response.
-   * 3) CREATE TABLE IF NOT EXISTS intervals (...).
-   * 4) INSERT OR IGNORE intervals to avoid duplicates.
-   * 5) Return summary message of how many intervals were inserted.
-   *
-   * Uses an asynchronous transaction on the Durable Object’s storage.
+   * Makes a POST to AEMO_API_URL, converts response to typed intervals,
+   * then inserts them into the table, ignoring duplicates.
    */
   async handleSync() {
-    try {
-      const sql = this.state.storage.sql;
-      if (!sql) {
-        console.error("SQL storage not available. Check your DO config/migrations.");
-        return new Response("Sync failed: SQL storage is not enabled for this Durable Object.", {
-          status: 500
-        });
-      }
-      const { AEMO_API_URL, AEMO_API_HEADERS } = this.env;
-      const headers = AEMO_API_HEADERS ? JSON.parse(AEMO_API_HEADERS.trim()) : {};
-      const requestBody = { timeScale: ["5MIN"] };
-      const fetchResponse = await fetch(AEMO_API_URL, {
-        method: "POST",
-        headers: {
-          ...headers,
-          "content-type": "application/json"
-        },
-        body: JSON.stringify(requestBody)
-      });
-      if (!fetchResponse.ok) {
-        const errorText = await fetchResponse.text();
-        console.error(`AEMO API error ${fetchResponse.status}: ${errorText}`);
-        return new Response(`Sync failed: AEMO API responded ${fetchResponse.status} - ${errorText}`, {
-          status: 500
-        });
-      }
-      const rawJson = await fetchResponse.json();
-      const dataArray = rawJson["5MIN"];
-      if (!Array.isArray(dataArray)) {
-        console.error('Response JSON missing the "5MIN" array.');
-        return new Response('Sync failed: No valid "5MIN" array in AEMO response.', { status: 500 });
-      }
-      const intervals = dataArray.map((item) => ({
-        settlementdate: item.SETTLEMENTDATE,
-        regionid: item.REGIONID,
-        rrp: parseFloat(String(item.RRP))
-      }));
-      sql.exec(`
-        CREATE TABLE IF NOT EXISTS intervals (
-          settlementdate TEXT PRIMARY KEY,
-          regionid TEXT,
-          rrp NUMERIC
-        );
-      `);
-      let insertedCount = 0;
-      await this.state.storage.transaction(
-        async (txn) => {
-          const txnSql = txn.sql;
-          if (!txnSql) {
-            console.error("Transaction object does not have SQL bindings.");
-            return;
-          }
-          for (const interval of intervals) {
-            const cursor = txnSql.exec(
-              `INSERT OR IGNORE INTO intervals (settlementdate, regionid, rrp) VALUES (?, ?, ?)`,
-              interval.settlementdate,
-              interval.regionid,
-              interval.rrp
-            );
-            insertedCount += cursor.rowsWritten;
-          }
-        }
+    const requestBody = { timeScale: ["5MIN"] };
+    const headers = this.parseHeaders(this.env.AEMO_API_HEADERS);
+    const resp = await fetch(this.env.AEMO_API_URL, {
+      method: "POST",
+      headers: {
+        ...headers,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(requestBody)
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      return new Response(`AEMO API error ${resp.status}: ${err}`, { status: 500 });
+    }
+    const data = await resp.json();
+    if (!Array.isArray(data["5MIN"])) {
+      return new Response(`Invalid or missing "5MIN" array in response.`, { status: 500 });
+    }
+    const intervals = data["5MIN"].map((item) => ({
+      settlementdate: item.SETTLEMENTDATE,
+      regionid: item.REGIONID,
+      rrp: parseFloat(String(item.RRP))
+    }));
+    let insertedCount = 0;
+    for (const interval of intervals) {
+      const cursor = this.sql.exec(
+        `INSERT OR IGNORE INTO intervals (settlementdate, regionid, rrp) VALUES (?, ?, ?)`,
+        interval.settlementdate,
+        interval.regionid,
+        interval.rrp
       );
-      const message = `Sync complete. Fetched ${intervals.length} intervals; inserted ${insertedCount} new.`;
-      console.log(message);
-      return new Response(message, { status: 200 });
-    } catch (err) {
-      console.error("Error during handleSync:", err);
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      return new Response("Sync failed: " + errorMessage, { status: 500 });
+      insertedCount += cursor.rowsWritten;
+    }
+    return new Response(
+      `Synced ${intervals.length} intervals, inserted ${insertedCount} new.`,
+      { status: 200 }
+    );
+  }
+  /**
+   * Safely parse JSON headers or return an empty object if invalid.
+   */
+  parseHeaders(raw) {
+    try {
+      return raw && raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+      return {};
     }
   }
 };
 
 // src/index.ts
+var WORKER_INFO = `AEMO Data Logger Worker. 
+Runs on a CRON schedule, calls the DO\u2019s /sync route to ingest intervals.`;
 var src_default = {
   /**
-   * The scheduled handler runs every 5 minutes offset by 1 minute (or as configured).
-   *
-   * @param controller The Cloudflare scheduled event controller.
-   * @param env        The typed environment with DO references.
-   * @param ctx        The execution context for async tasks.
+   * Invoked by Cloudflare’s scheduler as configured in wrangler.*.toml (e.g., every 5min).
    */
   async scheduled(controller, env, ctx) {
-    try {
-      const id = env.AEMO_DATA.idFromName("AEMO_LOGGER");
-      const stub = env.AEMO_DATA.get(id);
-      await stub.fetch("https://dummy-url/sync", { method: "POST" });
-    } catch (err) {
-      console.error("Scheduled job error in data logger:", err);
-    }
+    const id = env.AEMO_DATA.idFromName("AEMO_LOGGER");
+    const stub = env.AEMO_DATA.get(id);
+    await stub.fetch("https://dummy-url/sync", { method: "POST" });
   },
   /**
-   * A basic fetch handler for local testing or fallback usage.
+   * Minimal fetch handler. For local dev, you can run wrangler dev --test-scheduled
+   * or call /__scheduled?cron=*+*+*+*+* to simulate the scheduled event triggers.
    */
-  async fetch(request, env, ctx) {
-    return new Response(
-      "AEMO data logger Worker: use scheduled triggers or manual fetch to /sync on the DO.\n",
-      { headers: { "content-type": "text/plain" } }
-    );
+  async fetch(req, env, ctx) {
+    return new Response(WORKER_INFO, { headers: { "Content-Type": "text/plain" } });
   }
 };
 
