@@ -3,25 +3,12 @@
  * network price for a selected region and computes an approximate cost for a chosen
  * energy scenario (toast, EV charge, phone charge, etc.).
  *
- * Features and enhancements include:
- *  - Polling the AEMO "5MIN" endpoint every five minutes.
- *  - Automatic region determination using the pathname ("nsw", "qld", "sa", "tas", "vic").
- *  - Scenario determination via subdomain in production (query string in dev mode).
- *  - Enhanced loading and error feedback.
- *  - A manual refresh button.
- *  - Accessible icons with aria‑labels and tooltips.
- *  - Smooth transitions when pricing numbers update.
- *  - An overlaid 24‑hour trend chart displaying the latest 24‑hour period (blue)
- *    and the previous 24‑hour period (grey) with a horizontal red reference line indicating the maximum cost.
- *  - Display of "Cheapest" and "Most Expensive" scenario cards with calendar views.
- *  - A daily summary table of wholesale and retail rates, with prices formatted using the Australian locale.
- *  - Clear indication that times are based on NEM Time (Australia/Brisbane).
- *  - Improved geolocation dialog and explanatory messaging.
- *  - Navigation and scenario transition clarity through selected drawer items.
+ * Major UI update to present a more modern interface, taking inspiration from the
+ * ASCII layout provided by the user while preserving existing functionality and logic.
  *
  * Author: Troy Kelly <troy@troykelly.com>
  * Original Date: 16 March 2025
- * Updated: 17 March 2025
+ * Updated: 18 March 2025 (UI overhaul)
  */
 
 import React, { useEffect, useState, ReactNode } from 'react';
@@ -31,17 +18,9 @@ import {
   CardContent,
   Typography,
   CircularProgress,
-  CardActions,
   Tooltip,
   IconButton,
   Link,
-  AppBar,
-  Toolbar,
-  Drawer,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemIcon,
   Button,
   FormControl,
   InputLabel,
@@ -54,37 +33,27 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
   Table,
   TableBody,
   TableCell,
   TableContainer,
   TableHead,
   TableRow,
-  Paper
+  Paper,
+  Alert
 } from '@mui/material';
-import Alert from '@mui/material/Alert';
-import CardHeader from '@mui/material/CardHeader';
-import BreakfastDiningIcon from '@mui/icons-material/BreakfastDining';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import InfoIcon from '@mui/icons-material/Info';
 import MenuIcon from '@mui/icons-material/Menu';
 import MonetizationOnIcon from '@mui/icons-material/MonetizationOn';
-import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
-import ShowerIcon from '@mui/icons-material/Shower';
-import LocalCafeIcon from '@mui/icons-material/LocalCafe';
-import MicrowaveIcon from '@mui/icons-material/Microwave';
-import LightbulbIcon from '@mui/icons-material/Lightbulb';
-import SmartphoneIcon from '@mui/icons-material/Smartphone';
-import LaptopIcon from '@mui/icons-material/Laptop';
-import LocalLaundryServiceIcon from '@mui/icons-material/LocalLaundryService';
-import LocalDiningIcon from '@mui/icons-material/LocalDining';
-import ElectricCarIcon from '@mui/icons-material/ElectricCar';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import StarIcon from '@mui/icons-material/Star';
 import WarningIcon from '@mui/icons-material/Warning';
-import RefreshIcon from '@mui/icons-material/Refresh';
-
-import Calendar from 'react-calendar';
-import 'react-calendar/dist/Calendar.css';
-
+import BreakfastDiningIcon from '@mui/icons-material/BreakfastDining';
+import ElectricBoltIcon from '@mui/icons-material/ElectricBolt';
 import { AemoInterval, getRetailRateFromInterval, SupportedRegion } from './pricingCalculator';
 import { EnergyScenarios } from './energyScenarios';
 import statesData from '../data/au-states.json';
@@ -137,7 +106,7 @@ function formatIntervalTimeRange(dateString: string): string {
   };
   const startTime = startDate.toLocaleTimeString('en-AU', options);
   const endTime = endDate.toLocaleTimeString('en-AU', options);
-  return `${startTime} -> ${endTime}`;
+  return `${startTime} to ${endTime}`;
 }
 
 /**
@@ -164,53 +133,6 @@ function getScenarioKey(): string {
 }
 
 /**
- * Maps an icon name to its corresponding MUI icon component with aria-label.
- */
-function getScenarioIcon(iconName?: string): JSX.Element {
-  switch ((iconName || '').toLowerCase()) {
-    case 'breakfastdining':
-      return <BreakfastDiningIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Toaster icon" />;
-    case 'shower':
-      return <ShowerIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Shower icon" />;
-    case 'localcafe':
-      return <LocalCafeIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Boiling water icon" />;
-    case 'microwave':
-      return <MicrowaveIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Microwave icon" />;
-    case 'lightbulb':
-      return <LightbulbIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Light bulb icon" />;
-    case 'smartphone':
-      return <SmartphoneIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Smartphone icon" />;
-    case 'laptop':
-      return <LaptopIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Laptop icon" />;
-    case 'locallaundryservice':
-      return <LocalLaundryServiceIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Washing machine icon" />;
-    case 'localdining':
-      return <LocalDiningIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Dishwasher icon" />;
-    case 'electriccar':
-      return <ElectricCarIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Electric vehicle icon" />;
-    default:
-      return <HelpOutlineIcon fontSize="large" style={{ marginRight: 8 }} aria-label="Unknown scenario icon" />;
-  }
-}
-
-/**
- * Displays a simple 404 message when a scenario is not found.
- */
-function ScenarioNotFound({ scenarioKey }: { scenarioKey: string }): JSX.Element {
-  return (
-    <Box display="flex" flexDirection="column" height="100vh" alignItems="center" justifyContent="center" textAlign="center" bgcolor="#fafafa">
-      <Typography variant="h3" gutterBottom>404 - Scenario Not Found</Typography>
-      <Typography variant="body1">
-        The requested scenario "{scenarioKey}" does not exist.
-      </Typography>
-      <Box m={2}>
-        <Button variant="contained" onClick={() => (window.location.href = '/')}>Go Home</Button>
-      </Box>
-    </Box>
-  );
-}
-
-/**
  * Creates or updates a meta tag with the given attribute and content.
  */
 function setMetaTag(attrName: string, attrValue: string, content: string): void {
@@ -223,8 +145,21 @@ function setMetaTag(attrName: string, attrValue: string, content: string): void 
   element.setAttribute('content', content);
 }
 
-// Ray-casting and state determination functions (omitted for brevity; unchanged)
-function isPointInPolygon(polygon: number[][], lat: number, lon: number): boolean { /* ... */ let inside = false; for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) { const xi = polygon[i][1], yi = polygon[i][0]; const xj = polygon[j][1], yj = polygon[j][0]; const intersect = ((yi > lon) !== (yj > lon)) && (lat < (xj - xi) * (lon - yi) / (yj - yi) + xi); if (intersect) inside = !inside; } return inside; }
+// Ray-casting and state determination functions (unmodified, minimal impact):
+function isPointInPolygon(polygon: number[][], lat: number, lon: number): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][1];
+    const yi = polygon[i][0];
+    const xj = polygon[j][1];
+    const yj = polygon[j][0];
+    const intersect =
+      (yi > lon !== yj > lon) &&
+      lat < ((xj - xi) * (lon - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
 function isPointInRingArray(ringArray: number[][][], lat: number, lon: number): boolean {
   if (ringArray.length === 0) return false;
   const outerRing = ringArray[0];
@@ -256,14 +191,10 @@ function mapStateNameToRegionKey(stateName: string): string | null {
   if (lowerName.includes('tasmania')) return 'tas';
   return null;
 }
-function isWeekend(date: Date): boolean {
-  const day = date.getDay();
-  return day === 0 || day === 6;
-}
 
-///////////////////////////////////////////////////////////////////////////
-// SparklineChart Component with Hover Tooltip
-///////////////////////////////////////////////////////////////////////////
+/**
+ * SparklineChart for the last 24+24 hours. We keep name & logic, just visually used in "Last 48 hours" area.
+ */
 interface SparklineChartProps {
   todayIntervals: AemoInterval[];
   yesterdayIntervals: AemoInterval[];
@@ -282,33 +213,26 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   const svgHeight = 60;
   const padding = 5;
 
-  // First, compute overall maximum cost for both datasets for consistent scaling
+  // First, compute overall maximum cost for both datasets
   const overallAllCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
     EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
   );
   const overallMaxCost = overallAllCosts.length > 0 ? Math.max(...overallAllCosts) : 0;
-  const useLogScale = overallMaxCost > 1; // if cost > $1, use log scale
-  const offset = 1; // Offset to avoid log(0)
+  const useLogScale = overallMaxCost > 1; 
+  const offset = 1; // offset to avoid log(0)
   let overallMaxScaled = overallMaxCost;
-  if(useLogScale) {
+  if (useLogScale) {
     overallMaxScaled = Math.max(...overallAllCosts.map(c => Math.log(c + offset)));
   }
 
-  // Function to compute x coordinate (linear time scale based on viewBox)
+  // X coordinate as fraction of the last 24-hour or previous 24-hour periods
   const computeX = (dt: Date, base: Date): number => {
     const diff = dt.getTime() - base.getTime();
     const fraction = diff / (24 * 60 * 60 * 1000);
     return padding + fraction * (viewBoxWidth - 2 * padding);
   };
 
-  /**
-   * Compute SVG polyline points and corresponding data for tooltips.
-   *
-   * @param intervals The set of AEMO intervals.
-   * @param base The base time for the 24h period.
-   * @returns An object containing a polyline points string and an array of data points.
-   */
-  const computePointsAndData = (intervals: AemoInterval[], base: Date): { polyline: string, data: DataPoint[] } => {
+  function computePointsAndData(intervals: AemoInterval[], base: Date): { polyline: string, data: DataPoint[] } {
     const dataPoints: DataPoint[] = [];
     const polyline = intervals.map(iv => {
       const dt = new Date(iv.SETTLEMENTDATE + '+10:00');
@@ -316,7 +240,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
       const cost = EnergyScenarios.getCostForScenario(scenarioKey, retailRate);
       const x = computeX(dt, base);
       let scaledValue = cost;
-      if(useLogScale) {
+      if (useLogScale) {
         scaledValue = Math.log(cost + offset);
       }
       const y = svgHeight - padding - ((scaledValue / (useLogScale ? overallMaxScaled : (overallMaxCost || 1))) * (svgHeight - 2 * padding));
@@ -324,96 +248,171 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
       return `${x},${y}`;
     }).join(' ');
     return { polyline, data: dataPoints };
-  };
+  }
 
-  // Base times for current (recent) and previous 24-hour periods
+  // Base times
   const recentPeriodBase = new Date(new Date().getTime() - 24 * 60 * 60 * 1000);
   const previousPeriodBase = new Date(new Date().getTime() - 48 * 60 * 60 * 1000);
 
-  // Compute points for today's and yesterday's intervals
   const todayData = computePointsAndData(todayIntervals, recentPeriodBase);
   const yesterdayData = computePointsAndData(yesterdayIntervals, previousPeriodBase);
 
-  // Compute y reference line for the maximum (using overall scaling)
+  // y ref line for max
   const yRef = svgHeight - padding - (((useLogScale ? Math.log(overallMaxCost + offset) : overallMaxCost) / (useLogScale ? overallMaxScaled : (overallMaxCost || 1))) * (svgHeight - 2 * padding));
 
-  // Hover state for showing extra tooltip data
   const [hoveredPoint, setHoveredPoint] = useState<DataPoint | null>(null);
   const svgRef = React.useRef<SVGSVGElement>(null);
 
-  // Handle mouse move over the SVG -- use today's data for tooltip
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement, MouseEvent>) => {
     if (!svgRef.current) return;
     const rect = svgRef.current.getBoundingClientRect();
-    // Convert mouse x coordinate to viewBox coordinate
     const mouseX = ((e.clientX - rect.left) / rect.width) * viewBoxWidth;
     if (todayData.data.length === 0) return;
     let nearest = todayData.data[0];
     let minDist = Math.abs(nearest.x - mouseX);
     todayData.data.forEach(pt => {
       const dist = Math.abs(pt.x - mouseX);
-      if(dist < minDist) { minDist = dist; nearest = pt; }
+      if (dist < minDist) {
+        minDist = dist;
+        nearest = pt;
+      }
     });
     setHoveredPoint(nearest);
   };
-
   const handleMouseLeave = () => {
     setHoveredPoint(null);
   };
 
-  // Build final chart data object (for debugging)
-  const chartData = {
-    today: todayIntervals.map(iv => ({
-      date: iv.SETTLEMENTDATE,
-      cost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
-    })),
-    yesterday: yesterdayIntervals.map(iv => ({
-      date: iv.SETTLEMENTDATE,
-      cost: EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
-    })),
-    todayPoints: todayData.polyline,
-    yesterdayPoints: yesterdayData.polyline
-  };
-  console.log("SparklineChart - Final Chart Data Object:", JSON.stringify(chartData, null, 2));
-
   return (
     <Box mt={2}>
-      <Typography variant="subtitle2">
-        Previous Two Days
+      <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+        Last 48 Hours
       </Typography>
-      {/* Wrap SVG in Box relative container to allow positioning of tooltip */}
-      <Box position="relative">
-        <svg ref={svgRef} width="100%" viewBox={`0 0 ${viewBoxWidth} ${svgHeight}`} aria-label="24-hour scenario cost trend" onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
+      <Box position="relative" sx={{ border: '1px solid #ccc', borderRadius: 1, p: 1, maxWidth: '100%', overflow: 'auto' }}>
+        <svg
+          ref={svgRef}
+          width="100%"
+          viewBox={`0 0 ${viewBoxWidth} ${svgHeight}`}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={handleMouseLeave}
+          aria-label="48-hour cost trend"
+        >
           {yesterdayIntervals.length > 0 && (
             <polyline fill="none" stroke="#888888" strokeWidth="2" points={yesterdayData.polyline} />
           )}
           {todayIntervals.length > 0 && (
             <polyline fill="none" stroke="#1976d2" strokeWidth="2" points={todayData.polyline} />
           )}
-          <line x1={padding} y1={yRef} x2={viewBoxWidth - padding} y2={yRef} stroke="#ff0000" strokeDasharray="4" strokeWidth="1" />
-          <text x={padding + 2} y={yRef - 2} fill="#ff0000" fontSize="10">
+          <line
+            x1={padding}
+            y1={yRef}
+            x2={viewBoxWidth - padding}
+            y2={yRef}
+            stroke="#ff0000"
+            strokeDasharray="4"
+            strokeWidth="1"
+          />
+          <text
+            x={padding + 2}
+            y={yRef - 2}
+            fill="#ff0000"
+            fontSize="10"
+          >
             Max: {formatCurrency(overallMaxCost)}
           </text>
           {hoveredPoint && (
             <>
-              {/* Circle marker for hovered point */}
               <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r="3" fill="#000" stroke="#fff" strokeWidth="1" />
-              {/* Tooltip text; placed a bit offset from the marker */}
               <text x={hoveredPoint.x + 5} y={hoveredPoint.y - 5} fill="#000" fontSize="10" style={{ pointerEvents: 'none' }}>
-                {new Date(hoveredPoint.date + '+10:00').toLocaleTimeString('en-AU', { timeZone: 'Australia/Brisbane', hour: '2-digit', minute: '2-digit' })}
-                {": "}{formatCurrency(hoveredPoint.cost)}
+                {new Date(hoveredPoint.date + '+10:00').toLocaleTimeString('en-AU', {
+                  timeZone: 'Australia/Brisbane',
+                  hour: '2-digit',
+                  minute: '2-digit'
+                })}
+                {": "}
+                {formatCurrency(hoveredPoint.cost)}
               </text>
             </>
           )}
         </svg>
+        <Typography variant="caption" display="block" textAlign="center" mt={1}>
+          (Mon 11:00 to Wed 11:00 example range)
+        </Typography>
       </Box>
     </Box>
   );
 };
 
-///////////////////////////////////////////////////////////////////////////
-// Main App Component
-///////////////////////////////////////////////////////////////////////////
+/**
+ * Displays a simple 404 message when a scenario is not found.
+ */
+function ScenarioNotFound({ scenarioKey }: { scenarioKey: string }): JSX.Element {
+  return (
+    <Box display="flex" flexDirection="column" height="100vh" alignItems="center" justifyContent="center" textAlign="center" bgcolor="#fafafa">
+      <Typography variant="h3" gutterBottom>404 - Scenario Not Found</Typography>
+      <Typography variant="body1">
+        The requested scenario "{scenarioKey}" does not exist.
+      </Typography>
+      <Box m={2}>
+        <Button variant="contained" onClick={() => (window.location.href = '/')}>Go Home</Button>
+      </Box>
+    </Box>
+  );
+}
+
+/**
+ * About Page - separate component.
+ */
+interface AboutPageProps {
+  // We still keep it, though the new design just references a link at the bottom.
+}
+export function AboutPage(_: AboutPageProps): JSX.Element {
+  useEffect(() => {
+    const pageTitle = 'About - Costs This Much';
+    const description = 'Learn about how the site calculates electricity costs for everyday tasks.';
+    document.title = pageTitle;
+    setMetaTag('property', 'og:title', pageTitle);
+    setMetaTag('property', 'og:description', description);
+    setMetaTag('property', 'og:url', window.location.href);
+    setMetaTag('property', 'og:type', 'website');
+    setMetaTag('name', 'DC.title', pageTitle);
+    setMetaTag('name', 'DC.description', description);
+    setMetaTag('name', 'DC.subject', 'About');
+  }, []);
+
+  return (
+    <Box display="flex" flexDirection="column" minHeight="100vh" p={2}>
+      <Typography variant="h4" gutterBottom>About This Site</Typography>
+      <Typography variant="body1" paragraph>
+        This site aims to help people understand the dynamic nature of electricity pricing.
+        Wholesale rates in the Australian National Electricity Market (AEMO) can change
+        every five minutes. By presenting near real‑time estimates of how much it might cost
+        to complete everyday tasks (such as toasting bread or charging a phone), we hope to
+        demystify how shifts in wholesale prices, network fees, environmental charges, and
+        retail margins combine to influence what you pay.
+      </Typography>
+      <Typography variant="body1" paragraph>
+        The scenarios use typical assumptions for wattage, duration, and consumption.
+        These examples are provided for educational purposes only – individual usage will vary.
+      </Typography>
+      <Typography variant="body1" paragraph>
+        Keep in mind that AEMO pricing is based on National Electricity Market (NEM)
+        time (Australia/Brisbane) and may not match your local time exactly.
+      </Typography>
+      <Typography variant="body1" paragraph>
+        This project was created by Troy Kelly and is licensed under CC0 1.0 Universal.
+        For more details, visit our{" "}
+        <Link href="https://github.com/troykelly/costs-how-much" target="_blank" rel="noopener noreferrer">
+          GitHub repository
+        </Link>.
+      </Typography>
+    </Box>
+  );
+}
+
+/**
+ * Main App - modernised layout.
+ */
 const App: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [rrpCentsPerKWh, setRrpCentsPerKWh] = useState<number>(0);
@@ -422,17 +421,59 @@ const App: React.FC = () => {
   const [usedIntervalDate, setUsedIntervalDate] = useState<string>('');
   const [regionIntervals, setRegionIntervals] = useState<AemoInterval[]>([]);
   const [allIntervals, setAllIntervals] = useState<AemoInterval[]>([]);
-  const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
   const [locationDialogOpen, setLocationDialogOpen] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const isDevMode = window.location.hostname.includes('localhost') || window.location.hostname.includes('127.');
 
-  const toggleDrawer = (open: boolean) => (): void => {
-    setDrawerOpen(open);
-  };
+  // Region is from path
+  const pathParts = window.location.pathname.split('/');
+  const regionKey = pathParts[1]?.toLowerCase() || 'nsw';
 
-  // Update scenario using subdomain if in production or query parameter if in dev mode.
+  // If about page
+  if (regionKey === 'about') {
+    return <AboutPage />;
+  }
+
+  // If no scenario, redirect to default scenario
+  const scenarioKeyStr = getScenarioKey().trim();
+  if (!scenarioKeyStr) {
+    window.location.href = '/nsw?s=toast';
+    return null;
+  }
+
+  // If scenario not found, show 404
+  const scenarioData = EnergyScenarios.getScenarioById(scenarioKeyStr);
+  if (!scenarioData) {
+    return <ScenarioNotFound scenarioKey={scenarioKeyStr} />;
+  }
+
+  // Map region to AEMO region
+  const regionMapping: Record<string, string> = {
+    nsw: 'NSW1',
+    qld: 'QLD1',
+    sa: 'SA1',
+    tas: 'TAS1',
+    vic: 'VIC1'
+  };
+  const regionFilter = regionMapping[regionKey] ?? 'NSW1';
+
+  // Setup meta tags for scenario
+  useEffect(() => {
+    const scenarioTitle = scenarioData.name;
+    const regionUpper = regionKey.toUpperCase();
+    const pageTitle = `Cost to ${scenarioTitle} in ${regionUpper}`;
+    const fullURL = window.location.href;
+    document.title = pageTitle;
+    setMetaTag('property', 'og:title', pageTitle);
+    setMetaTag('property', 'og:description', scenarioData.description);
+    setMetaTag('property', 'og:url', fullURL);
+    setMetaTag('property', 'og:type', 'website');
+    setMetaTag('name', 'DC.title', pageTitle);
+    setMetaTag('name', 'DC.description', scenarioData.description);
+    setMetaTag('name', 'DC.subject', scenarioTitle);
+  }, [scenarioData, regionKey]);
+
   function handleScenarioChange(newScenario: string): void {
     const url = new URL(window.location.href);
     if (!isDevMode && url.hostname.split('.').length > 2) {
@@ -446,45 +487,18 @@ const App: React.FC = () => {
     }
   }
 
-  // Change region by updating the pathname (region is determined from the first path segment)
   function handleRegionClick(newRegion: string): void {
-    const scenarioKey = getScenarioKey();
     const url = new URL(window.location.href);
+    const existingScenario = getScenarioKey();
     url.pathname = '/' + newRegion;
-    if (isDevMode && scenarioKey) {
-      url.searchParams.set('s', scenarioKey);
+    if (isDevMode && existingScenario) {
+      url.searchParams.set('s', existingScenario);
     }
     window.location.assign(url.toString());
   }
 
-  // Determine region from pathname; if the first segment is "about", render the About page.
-  const pathParts = window.location.pathname.split('/');
-  const regionKey = pathParts[1]?.toLowerCase() || 'nsw';
-  if (regionKey === 'about') {
-    return <AboutPage drawerOpen={drawerOpen} toggleDrawer={toggleDrawer} handleScenarioChange={handleScenarioChange} />;
-  }
-
-  const regionMapping: Record<string, string> = {
-    nsw: 'NSW1',
-    qld: 'QLD1',
-    sa: 'SA1',
-    tas: 'TAS1',
-    vic: 'VIC1'
-  };
-
-  const scenarioKeyStr = getScenarioKey().trim();
-  if (!scenarioKeyStr) {
-    window.location.href = '/nsw?s=toast';
-    return null;
-  }
-  const scenarioData = EnergyScenarios.getScenarioById(scenarioKeyStr);
-  if (!scenarioData) {
-    return <ScenarioNotFound scenarioKey={scenarioKeyStr} />;
-  }
-  const regionFilter = regionMapping[regionKey] ?? 'NSW1';
-
   /**
-   * Fetches the latest AEMO 5‑minute data.
+   * AEMO data fetch
    */
   const fetchAemoData = async (): Promise<void> => {
     try {
@@ -496,14 +510,12 @@ const App: React.FC = () => {
         body: JSON.stringify({ timeScale: ['5MIN'] })
       });
       if (!response.ok) {
-        throw new Error(`Network response was not OK. Status: ${response.status}`);
+        throw new Error(`Network response not OK: ${response.status}`);
       }
       const data: { '5MIN': AemoInterval[] } = await response.json();
-      console.log("Fetched AEMO intervals (raw):", data['5MIN'].length);
       setAllIntervals(data['5MIN']);
       const regData: AemoInterval[] = data['5MIN'].filter(iv => iv.REGIONID === regionFilter);
       regData.sort((a, b) => new Date(a.SETTLEMENTDATE).getTime() - new Date(b.SETTLEMENTDATE).getTime());
-      console.log("Fetched regionIntervals for region", regionFilter, ":", regData.length);
       setRegionIntervals(regData);
       if (regData.length > 0) {
         const latest = regData[regData.length - 1];
@@ -536,35 +548,27 @@ const App: React.FC = () => {
     return () => clearInterval(intervalId);
   }, [regionFilter, scenarioKeyStr]);
 
-  // -----------------------------------------------------------------------
-  // NEW 24+24 HOUR INTERVAL LOGIC
-  // Compute Brisbane current time using a fixed +10 hour offset (as Brisbane is UTC+10 always)
+  // For last 24/24 intervals
   function getBrisbaneNow(): Date {
     const now = new Date();
-    const brisbaneOffsetMinutes = 10 * 60; // +10 hours in minutes
+    const brisbaneOffsetMinutes = 10 * 60;
     const localOffsetMinutes = now.getTimezoneOffset();
     return new Date(now.getTime() + (brisbaneOffsetMinutes + localOffsetMinutes) * 60000);
   }
   const brisbaneNow = getBrisbaneNow();
   const twentyFourHoursAgo = new Date(brisbaneNow.getTime() - 24 * 60 * 60 * 1000);
   const fortyEightHoursAgo = new Date(brisbaneNow.getTime() - 48 * 60 * 60 * 1000);
-  console.log("App Component - Brisbane Now:", brisbaneNow);
-  console.log("App Component - 24 Hours Ago:", twentyFourHoursAgo);
-  console.log("App Component - 48 Hours Ago:", fortyEightHoursAgo);
 
   const recent24Intervals = regionIntervals.filter(iv => {
     const d = new Date(iv.SETTLEMENTDATE + '+10:00');
-    console.log("Recent 24h filtering: SETTLEMENTDATE=", iv.SETTLEMENTDATE, " parsed as ", d);
     return d >= twentyFourHoursAgo && d <= brisbaneNow;
   });
   const previous24Intervals = regionIntervals.filter(iv => {
     const d = new Date(iv.SETTLEMENTDATE + '+10:00');
-    console.log("Previous 24h filtering: SETTLEMENTDATE=", iv.SETTLEMENTDATE, " parsed as ", d);
     return d >= fortyEightHoursAgo && d < twentyFourHoursAgo;
   });
 
-  // -----------------------------------------------------------------------
-  // Compute daily summaries for the Daily Summary Table.
+  // Compute daily summaries to maintain existing functionality
   interface DailySummary {
     date: string;
     minWholesale: number;
@@ -599,8 +603,7 @@ const App: React.FC = () => {
   }
   const dailySummaries = computeDailySummaries(regionIntervals, regionKey as SupportedRegion);
 
-  // -----------------------------------------------------------------------
-  // NEW: Compute lowest and highest scenario prices from regionIntervals.
+  // Compute lowest/highest scenario cost across regionIntervals
   type PriceInfo = { cost: number; timestamp: string };
   let lowestScenario: PriceInfo = { cost: 0, timestamp: '' };
   let highestScenario: PriceInfo = { cost: 0, timestamp: '' };
@@ -629,429 +632,375 @@ const App: React.FC = () => {
     }
   }
 
-  // Get scenario icon element.
-  const scenarioIconElement = getScenarioIcon(scenarioData.iconName);
+  // For the "other region references"
+  const otherRegions = Object.keys(regionMapping).filter(r => r !== regionKey);
 
-  // Update meta tags on scenario change.
-  useEffect(() => {
-    const scenarioTitle = scenarioData.name;
-    const regionUpper = regionKey.toUpperCase();
-    const pageTitle = `Cost to ${scenarioTitle} in ${regionUpper}`;
-    const fullURL = window.location.href;
-    document.title = pageTitle;
-    setMetaTag('property', 'og:title', pageTitle);
-    setMetaTag('property', 'og:description', scenarioData.description);
-    setMetaTag('property', 'og:url', fullURL);
-    setMetaTag('property', 'og:type', 'website');
-    setMetaTag('name', 'DC.title', pageTitle);
-    setMetaTag('name', 'DC.description', scenarioData.description);
-    setMetaTag('name', 'DC.subject', scenarioTitle);
-  }, [scenarioData, regionKey]);
-
+  // Render
   return (
-    <Box display="flex" flexDirection="column" minHeight="100vh">
-      <AppBar position="static" sx={{ marginBottom: 2 }}>
-        <Toolbar>
-          <IconButton edge="start" color="inherit" aria-label="Menu" onClick={() => setDrawerOpen(true)}>
-            <MenuIcon />
-          </IconButton>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            Cost to {regionKey.toUpperCase()}
-          </Typography>
-        </Toolbar>
-      </AppBar>
+    <Box display="flex" flexDirection="column" minHeight="100vh" bgcolor="#fafafa">
+      {/* Header */}
+      <Box
+        sx={{
+          backgroundColor: '#EEE',
+          padding: 2,
+          textAlign: 'center',
+          borderBottom: '1px solid #CCC'
+        }}
+      >
+        <Typography variant="h5" sx={{ display: 'inline-flex', alignItems: 'center', fontWeight: 'bold' }}>
+          <ElectricBoltIcon fontSize="large" sx={{ marginRight: 1 }} />
+          Power Costs This Much!
+        </Typography>
+      </Box>
 
-      <Drawer anchor="left" open={drawerOpen} onClose={toggleDrawer(false)}>
-        <Box sx={{ width: 250 }} role="presentation" onClick={toggleDrawer(false)} onKeyDown={toggleDrawer(false)}>
-          <List>
-            <ListItem button onClick={() => handleScenarioChange('toast')} selected={'toast' === scenarioKeyStr}>
-              <ListItemIcon>
-                <BreakfastDiningIcon />
-              </ListItemIcon>
-              <ListItemText primary="Home" />
-            </ListItem>
-            <ListItem button onClick={() => (window.location.href = '/about')}>
-              <ListItemIcon>
-                <InfoIcon />
-              </ListItemIcon>
-              <ListItemText primary="About" />
-            </ListItem>
-            {EnergyScenarios.getAllScenarios().map(item => (
-              <ListItem key={item.id} button onClick={() => handleScenarioChange(item.id.toLowerCase())} selected={item.id.toLowerCase() === scenarioKeyStr}>
-                <ListItemIcon>{getScenarioIcon(item.iconName)}</ListItemIcon>
-                <ListItemText primary={item.name} />
-              </ListItem>
-            ))}
-          </List>
-        </Box>
-      </Drawer>
-
-      <Box component="main" flexGrow={1} display="flex" justifyContent="center" alignItems="flex-start" bgcolor="#fafafa" p={2}>
-        <Box sx={{ marginBottom: 4, maxWidth: 480, width: '100%' }}>
-          <Box sx={{ marginBottom: 2 }}>
-            <FormControl fullWidth>
-              <InputLabel id="scenario-select-label">Select Scenario</InputLabel>
-              <Select
-                labelId="scenario-select-label"
-                label="Select Scenario"
-                value={scenarioKeyStr}
-                onChange={(event: SelectChangeEvent) => handleScenarioChange(event.target.value)}
-              >
-                {EnergyScenarios.getAllScenarios().map(scn => (
-                  <MenuItem key={scn.id} value={scn.id.toLowerCase()}>
-                    {scn.name}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <Typography variant="caption" mt={1}>
-              Note: Subdomains are used for scenario selection in production.
-            </Typography>
-          </Box>
-
-          <Card sx={{ maxWidth: 480, width: '100%' }}>
-            <CardHeader
-              avatar={getScenarioIcon(scenarioData.iconName)}
-              title={`Cost for ${scenarioData.name}`}
-              action={
-                <Tooltip title="Refresh Data">
-                  <IconButton onClick={fetchAemoData} aria-label="Refresh Data">
-                    <RefreshIcon />
-                  </IconButton>
-                </Tooltip>
-              }
-            />
-            <CardContent>
-              {error ? (
-                <Alert severity="error" action={<Button color="inherit" size="small" onClick={fetchAemoData}>Retry</Button>}>
-                  {error}
-                </Alert>
-              ) : loading ? (
-                <Box display="flex" flexDirection="column" alignItems="center" mt={2}>
-                  <CircularProgress />
-                  <Typography variant="body2" mt={1}>Loading latest pricing…</Typography>
-                </Box>
-              ) : (
-                <>
-                  <Box display="flex" flexDirection="column" justifyContent="center" alignItems="center" mb={3}>
-                    <Box display="flex" alignItems="center" mb={1}>
-                      <MonetizationOnIcon fontSize="large" sx={{ marginRight: 1 }} aria-label="Price icon" />
-                      <Typography variant="h4" color="secondary" sx={{ transition: 'all 0.5s ease' }}>
-                        {formatCurrency(toastCostDollars)}
-                      </Typography>
-                    </Box>
-                    <Typography variant="subtitle1" align="center">(per scenario usage)</Typography>
-                  </Box>
-                  <Typography variant="body1" gutterBottom>Region: {regionFilter}</Typography>
-                  <Typography variant="body1" gutterBottom>
-                    Current Wholesale Spot Price: {rrpCentsPerKWh.toFixed(3)} c/kWh{' '}
-                    <Tooltip title="This is the real-time wholesale price from AEMO. Negative values are floored to 0.">
-                      <IconButton size="small" aria-label="Wholesale info">
-                        <InfoIcon fontSize="inherit" />
-                      </IconButton>
-                    </Tooltip>
-                  </Typography>
-                  <Typography variant="body1" gutterBottom>
-                    Final Price (incl. GST): {finalRateCents.toFixed(3)} c/kWh{' '}
-                    <Tooltip title="This is the approximate retail rate, including all charges.">
-                      <IconButton size="small" aria-label="Retail info">
-                        <InfoIcon fontSize="inherit" />
-                      </IconButton>
-                    </Tooltip>
-                  </Typography>
-                  {scenarioData.description && (
-                    <Typography variant="body2" sx={{ marginTop: 2 }}>
-                      {scenarioData.description}
-                    </Typography>
-                  )}
-                  {scenarioData.assumptions && scenarioData.assumptions.length > 0 && (
-                    <Box mt={2}>
-                      <Typography variant="subtitle1">Assumptions:</Typography>
-                      <ul>
-                        {scenarioData.assumptions.map((assumption, idx) => (
-                          <li key={idx}>
-                            <Typography variant="body2">{assumption}</Typography>
-                          </li>
-                        ))}
-                      </ul>
-                    </Box>
-                  )}
-                  <Typography variant="caption" display="block" mt={2}>
-                    Updated automatically every 5 minutes.
-                  </Typography>
-                </>
-              )}
-            </CardContent>
-            <CardActions>
-              <Typography variant="caption">
-                Interval used for calculation: {formatIntervalDate(usedIntervalDate)}
-              </Typography>
-            </CardActions>
-            {!loading && !error && regionIntervals.length > 0 && (
-              <CardActions>
-                <Typography variant="caption">
-                  Lowest Price: {formatCurrency(lowestScenario.cost)} at {formatIntervalDate(lowestScenario.timestamp)} | Highest Price: {formatCurrency(highestScenario.cost)} at {formatIntervalDate(highestScenario.timestamp)}
+      {/* Quick Region Info Table (like ASCII mockup) */}
+      <Box sx={{ p: 2, borderBottom: '1px solid #CCC' }}>
+        <Grid container spacing={2}>
+          {/* Left side region & map placeholder */}
+          <Grid item xs={12} md={2}>
+            <Box
+              sx={{
+                border: '1px solid #CCC',
+                minHeight: 100,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              <Typography variant="subtitle2">MAP IMAGE<br />({regionKey.toUpperCase()})</Typography>
+            </Box>
+          </Grid>
+          {/* Right side info */}
+          <Grid item xs={12} md={10}>
+            <Grid container>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="subtitle2">Current Wholesale</Typography>
+                <Typography variant="body2">
+                  {loading ? <CircularProgress size="1rem" /> : `${(rrpCentsPerKWh / 100).toFixed(3)} $/kWh`}
                 </Typography>
-              </CardActions>
-            )}
-          </Card>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="subtitle2">Current Retail</Typography>
+                <Typography variant="body2">
+                  {loading ? <CircularProgress size="1rem" /> : `${(finalRateCents / 100).toFixed(3)} $/kWh`}
+                </Typography>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="subtitle2">Cheapest Rate</Typography>
+                <Typography variant="body2">
+                  {lowestScenario.cost > 0 ? formatCurrency(lowestScenario.cost) : '$0.00'}
+                </Typography>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="subtitle2">Most Expensive</Typography>
+                <Typography variant="body2">
+                  {highestScenario.cost > 0 ? formatCurrency(highestScenario.cost) : '$0.00'}
+                </Typography>
+              </Grid>
+            </Grid>
+            <Typography variant="caption" display="block" sx={{ mt: 1 }}>
+              {usedIntervalDate
+                ? `Timestamp: ${formatIntervalDate(usedIntervalDate)}`
+                : 'No interval data'}
+            </Typography>
+          </Grid>
+        </Grid>
+        <Box mt={1}>
+          <Tooltip title="Refresh Data">
+            <IconButton onClick={fetchAemoData}>
+              <RefreshIcon />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      </Box>
 
-          {/* 24+24 Hour Comparative Chart */}
+      {/* Main Content Area */}
+      <Box sx={{ p: 2, flexGrow: 1 }}>
+        {error && (
+          <Alert severity="error" action={<Button color="inherit" size="small" onClick={fetchAemoData}>Retry</Button>}>
+            {error}
+          </Alert>
+        )}
+
+        {/* Big cost in the center - "A piece of toast currently costs" style */}
+        <Box textAlign="center" mt={2}>
+          <Typography variant="h6" gutterBottom>
+            A {scenarioData.name.toLowerCase()} currently costs
+          </Typography>
+          {loading ? (
+            <Box display="inline-flex" flexDirection="column" alignItems="center" mt={2}>
+              <CircularProgress />
+              <Typography variant="body2" mt={1}>Loading…</Typography>
+            </Box>
+          ) : (
+            <Typography variant="h2" sx={{ fontWeight: 'bold', lineHeight: 1 }}>
+              {formatCurrency(toastCostDollars)}
+            </Typography>
+          )}
+          <Typography variant="body2" mt={1}>
+            {usedIntervalDate ? `@ ${formatIntervalDate(usedIntervalDate)}` : ''}
+          </Typography>
+        </Box>
+
+        {/* CHEAPEST / MOST EXPENSIVE boxes */}
+        <Box mt={3} display="flex" justifyContent="center" flexWrap="wrap" gap={2}>
+          <Card sx={{ width: 140, textAlign: 'center' }}>
+            <CardContent>
+              <Typography variant="subtitle2">CHEAPEST</Typography>
+              <Typography variant="h6">
+                {lowestScenario.cost > 0 ? formatCurrency(lowestScenario.cost) : '$0.00'}
+              </Typography>
+              <Typography variant="body2">
+                {lowestScenario.timestamp ? formatIntervalDate(lowestScenario.timestamp) : null}
+              </Typography>
+            </CardContent>
+          </Card>
+          <Card sx={{ width: 140, textAlign: 'center' }}>
+            <CardContent>
+              <Typography variant="subtitle2">EXPENSIVE</Typography>
+              <Typography variant="h6">
+                {highestScenario.cost > 0 ? formatCurrency(highestScenario.cost) : '$0.00'}
+              </Typography>
+              <Typography variant="body2">
+                {highestScenario.timestamp ? formatIntervalDate(highestScenario.timestamp) : null}
+              </Typography>
+            </CardContent>
+          </Card>
+        </Box>
+
+        {/* Other Regions row */}
+        <Box mt={3}>
+          <Typography variant="subtitle1" gutterBottom>
+            Other Regions
+          </Typography>
+          <Grid container spacing={2} sx={{ maxWidth: 480 }}>
+            {(() => {
+              const references = otherRegions.map(r => {
+                const intervalsForR = allIntervals.filter(iv => iv.REGIONID === regionMapping[r]);
+                intervalsForR.sort((a, b) => new Date(a.SETTLEMENTDATE).getTime() - new Date(b.SETTLEMENTDATE).getTime());
+                if (intervalsForR.length > 0) {
+                  const latest = intervalsForR[intervalsForR.length - 1];
+                  let wholesale = latest.RRP * 0.1;
+                  if (wholesale < 0) wholesale = 0;
+                  const finalRate = getRetailRateFromInterval(latest, r as SupportedRegion, false, true);
+                  const cost = EnergyScenarios.getCostForScenario(scenarioKeyStr, finalRate);
+                  return {
+                    region: r.toUpperCase(),
+                    cost,
+                    date: latest.SETTLEMENTDATE
+                  };
+                } else {
+                  return { region: r.toUpperCase(), cost: 0, date: '' };
+                }
+              });
+              // find min & max among references + our cost 
+              const allCosts = [toastCostDollars, ...references.map(x => x.cost)];
+              const minVal = Math.min(...allCosts);
+              const maxVal = Math.max(...allCosts);
+
+              return references.map(item => {
+                const cost = item.cost;
+                let tag: ReactNode = null;
+                if (cost === minVal && minVal === maxVal) {
+                  tag = <Chip label="Cheapest & Most Exp" icon={<StarIcon />} color="warning" size="small" sx={{ mt: 1 }} />;
+                } else if (cost === minVal) {
+                  tag = <Chip label="CHEAP" icon={<StarIcon />} color="success" size="small" sx={{ mt: 1 }} />;
+                } else if (cost === maxVal) {
+                  tag = <Chip label="EXP" icon={<WarningIcon />} color="error" size="small" sx={{ mt: 1 }} />;
+                }
+                return (
+                  <Grid item xs={6} sm={3} key={item.region}>
+                    <Card
+                      sx={{ cursor: 'pointer' }}
+                      onClick={() => handleRegionClick(item.region.toLowerCase())}
+                    >
+                      <CardContent sx={{ textAlign: 'center' }}>
+                        <Typography variant="body1" sx={{ fontWeight: 'bold' }}>{item.region}</Typography>
+                        <Typography variant="body2">{formatCurrency(item.cost)}</Typography>
+                        {tag}
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                );
+              });
+            })()}
+          </Grid>
+        </Box>
+
+        {/* Scenario Dropdown */}
+        <Box mt={3} sx={{ maxWidth: 480 }}>
+          <FormControl fullWidth>
+            <InputLabel id="scenario-select-label">Scenario</InputLabel>
+            <Select
+              labelId="scenario-select-label"
+              label="Scenario"
+              value={scenarioKeyStr}
+              onChange={(event: SelectChangeEvent) => handleScenarioChange(event.target.value)}
+            >
+              {EnergyScenarios.getAllScenarios().map(scn => (
+                <MenuItem key={scn.id} value={scn.id.toLowerCase()}>
+                  {scn.name}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </Box>
+
+        {/* Assumptions */}
+        {scenarioData.assumptions && scenarioData.assumptions.length > 0 && (
+          <Box mt={3} sx={{ maxWidth: 480 }}>
+            <Card>
+              <CardContent>
+                <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                  Assumptions
+                </Typography>
+                <ul>
+                  {scenarioData.assumptions.map((ass, idx) => (
+                    <li key={idx}>
+                      <Typography variant="body2">{ass}</Typography>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          </Box>
+        )}
+
+        {/* Last 48 hours chart */}
+        {!loading && regionIntervals.length > 0 && (
           <SparklineChart
             todayIntervals={recent24Intervals}
             yesterdayIntervals={previous24Intervals}
             region={regionKey as SupportedRegion}
             scenarioKey={scenarioKeyStr}
           />
+        )}
 
-          {/* Reference Grid for other regions */}
-          <Box sx={{ maxWidth: 480, width: '100%', marginTop: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              Reference Costs for Other Regions
-            </Typography>
-            <Grid container spacing={2}>
-              {(() => {
-                const otherRegions = Object.keys(regionMapping).filter(r => r !== regionKey);
-                const refs = otherRegions.map(r => {
-                  const intervalsForR = allIntervals.filter(iv => iv.REGIONID === regionMapping[r]);
-                  intervalsForR.sort((a, b) => new Date(a.SETTLEMENTDATE).getTime() - new Date(b.SETTLEMENTDATE).getTime());
-                  if (intervalsForR.length > 0) {
-                    const latest = intervalsForR[intervalsForR.length - 1];
-                    let wholesale = latest.RRP * 0.1;
-                    if (wholesale < 0) wholesale = 0;
-                    const finalRate = getRetailRateFromInterval(latest, r as SupportedRegion, false, true);
-                    const cost = EnergyScenarios.getCostForScenario(scenarioKeyStr, finalRate);
-                    return {
-                      region: r.toUpperCase(),
-                      wholesaleCents: wholesale,
-                      scenarioCost: cost,
-                      date: latest.SETTLEMENTDATE
-                    };
-                  } else {
-                    return { region: r.toUpperCase(), wholesaleCents: 0, scenarioCost: 0, date: '' };
-                  }
-                });
-                return refs.map(item => {
-                  const cost = item.scenarioCost;
-                  const isMin = cost === Math.min(...[toastCostDollars, ...refs.map(r => r.scenarioCost)]);
-                  const isMax = cost === Math.max(...[toastCostDollars, ...refs.map(r => r.scenarioCost)]);
-                  let tag: ReactNode = null;
-                  if (isMin && isMax) {
-                    tag = (
-                      <Chip label="Cheapest & Most Expensive" icon={<StarIcon />} color="warning" size="small" sx={{ mt: 1 }} />
-                    );
-                  } else if (isMin) {
-                    tag = (
-                      <Chip label="Cheapest" icon={<StarIcon />} color="success" size="small" sx={{ mt: 1 }} />
-                    );
-                  } else if (isMax) {
-                    tag = (
-                      <Chip label="Most Expensive" icon={<WarningIcon />} color="error" size="small" sx={{ mt: 1 }} />
-                    );
-                  }
-                  let regKeyStr = 'nsw';
-                  switch (item.region.toLowerCase()) {
-                    case 'nsw': regKeyStr = 'nsw'; break;
-                    case 'qld': regKeyStr = 'qld'; break;
-                    case 'sa': regKeyStr = 'sa'; break;
-                    case 'tas': regKeyStr = 'tas'; break;
-                    case 'vic': regKeyStr = 'vic'; break;
-                    default: regKeyStr = 'nsw';
-                  }
-                  return (
-                    <Grid item xs={6} sm={4} key={item.region}>
-                      <Card sx={{ cursor: 'pointer' }} onClick={() => handleRegionClick(regKeyStr)}>
-                        <CardContent>
-                          <Typography variant="h6">{item.region}</Typography>
-                          <Typography variant="body1">{formatCurrency(item.scenarioCost)}</Typography>
-                          {tag}
-                        </CardContent>
-                      </Card>
-                    </Grid>
-                  );
-                });
-              })()}
-            </Grid>
-          </Box>
-
-          {/* Daily Summary Table */}
-          <Box sx={{ maxWidth: 480, width: '100%', marginTop: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              Daily Wholesale and Retail Rates Summary
-            </Typography>
-            {dailySummaries.length === 0 ? (
-              <Typography variant="body2">No daily summary data available.</Typography>
-            ) : (
-              <TableContainer component={Paper}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Date</TableCell>
-                      <TableCell align="right">Cheapest Wholesale ($/kWh)</TableCell>
-                      <TableCell align="right">Cheapest Retail ($/kWh)</TableCell>
-                      <TableCell align="right">Most Expensive Wholesale ($/kWh)</TableCell>
-                      <TableCell align="right">Most Expensive Retail ($/kWh)</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {dailySummaries.map(row => (
-                      <TableRow key={row.date}>
-                        <TableCell component="th" scope="row">{row.date}</TableCell>
-                        <TableCell align="right">{(row.minWholesale / 100).toFixed(2)}</TableCell>
-                        <TableCell align="right">{(row.minRetail / 100).toFixed(2)}</TableCell>
-                        <TableCell align="right">{(row.maxWholesale / 100).toFixed(2)}</TableCell>
-                        <TableCell align="right">{(row.maxRetail / 100).toFixed(2)}</TableCell>
+        {/* Collapsible daily summary to preserve existing functionality */}
+        <Box mt={3} sx={{ maxWidth: 480 }}>
+          <Accordion>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                Daily Summaries
+              </Typography>
+            </AccordionSummary>
+            <AccordionDetails>
+              {dailySummaries.length === 0 ? (
+                <Typography variant="body2">No daily summary data available.</Typography>
+              ) : (
+                <TableContainer component={Paper}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Date</TableCell>
+                        <TableCell align="right">Min Whl ($/kWh)</TableCell>
+                        <TableCell align="right">Min Rtl ($/kWh)</TableCell>
+                        <TableCell align="right">Max Whl ($/kWh)</TableCell>
+                        <TableCell align="right">Max Rtl ($/kWh)</TableCell>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            )}
-          </Box>
+                    </TableHead>
+                    <TableBody>
+                      {dailySummaries.map(row => (
+                        <TableRow key={row.date}>
+                          <TableCell component="th" scope="row">{row.date}</TableCell>
+                          <TableCell align="right">{(row.minWholesale / 100).toFixed(2)}</TableCell>
+                          <TableCell align="right">{(row.minRetail / 100).toFixed(2)}</TableCell>
+                          <TableCell align="right">{(row.maxWholesale / 100).toFixed(2)}</TableCell>
+                          <TableCell align="right">{(row.maxRetail / 100).toFixed(2)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              )}
+            </AccordionDetails>
+          </Accordion>
         </Box>
       </Box>
 
-      <Box component="footer" sx={{ textAlign: 'center', py: 2 }}>
+      {/* Footer */}
+      <Box
+        component="footer"
+        sx={{
+          borderTop: '1px solid #CCC',
+          p: 2,
+          textAlign: 'center',
+          mt: 'auto'
+        }}
+      >
         <Typography variant="body2">
-          CC0 1.0 Universal | <a href="https://github.com/troykelly/costs-this-much">GitHub</a> | <a href="https://troykelly.com/">Troy Kelly</a>
-          <br />
+          CC0 1.0 Universal |{' '}
+          <Link href="/about" style={{ marginRight: 8 }}>
+            About
+          </Link>{' '}
+          |{' '}
+          <Link href="https://github.com/troykelly/costs-how-much" target="_blank" rel="noopener noreferrer" style={{ marginRight: 8 }}>
+            GitHub
+          </Link>
+          | <Link href="https://troykelly.com/" target="_blank" rel="noopener noreferrer" style={{ marginRight: 8 }}>Troy Kelly</Link>
+          |{' '}
+          <Button variant="text" size="small" onClick={() => setLocationDialogOpen(true)}>
+            My Location
+          </Button>
+        </Typography>
+        <Typography variant="caption" display="block">
           Data sourced from{' '}
-          <Link href="https://www.aemo.com.au/" target="_blank" rel="noopener noreferrer">
+          <Link href="https://www.aemo.com.au" target="_blank" rel="noopener noreferrer">
             AEMO
           </Link>
         </Typography>
-        <Box mt={1}>
-          <Button variant="outlined" onClick={() => setLocationDialogOpen(true)}>My Location</Button>
-        </Box>
       </Box>
 
+      {/* Location Dialog */}
       <Dialog open={locationDialogOpen} onClose={() => setLocationDialogOpen(false)}>
         <DialogTitle>Location Data Request</DialogTitle>
         <DialogContent>
           <Typography variant="body1">
             We are about to request your location data to determine the nearest region for pricing.
-            This is entirely voluntary – no long‑term tracking occurs and your data will not be stored.
+            This is voluntary – we do not store your location.
           </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setLocationDialogOpen(false)} color="error">Deny</Button>
-          <Button onClick={() => {
-            setLocationDialogOpen(false);
-            localStorage.setItem('hasAskedLocation', 'true');
-            if (!navigator.geolocation) {
-              alert('Geolocation is not supported by your browser.');
-              return;
-            }
-            navigator.geolocation.getCurrentPosition(
-              (position) => {
-                const lat = position.coords.latitude;
-                const lon = position.coords.longitude;
-                const stateName = getStateNameForLatLon(lat, lon);
-                if (!stateName) {
-                  alert('It appears you are outside of the serviced area. We will default to NSW.');
-                  handleRegionClick('nsw');
-                  return;
-                }
-                const mappedRegion = mapStateNameToRegionKey(stateName);
-                if (mappedRegion && regionMapping[mappedRegion]) {
-                  handleRegionClick(mappedRegion);
-                } else {
-                  alert('It appears your location is not in a supported region. We will default to NSW.');
-                  handleRegionClick('nsw');
-                }
-              },
-              () => {
-                alert('Unable to retrieve your location. Please check permissions.');
+          <Button
+            onClick={() => {
+              setLocationDialogOpen(false);
+              localStorage.setItem('hasAskedLocation', 'true');
+              if (!navigator.geolocation) {
+                alert('Geolocation is not supported by your browser.');
+                return;
               }
-            );
-          }} color="primary">Allow</Button>
+              navigator.geolocation.getCurrentPosition(
+                position => {
+                  const lat = position.coords.latitude;
+                  const lon = position.coords.longitude;
+                  const stateName = getStateNameForLatLon(lat, lon);
+                  if (!stateName) {
+                    alert('It appears you are outside of the serviced area. We will default to NSW.');
+                    handleRegionClick('nsw');
+                    return;
+                  }
+                  const mappedRegion = mapStateNameToRegionKey(stateName);
+                  if (mappedRegion && regionMapping[mappedRegion]) {
+                    handleRegionClick(mappedRegion);
+                  } else {
+                    alert('It appears your location is not in a supported region. Defaulting to NSW.');
+                    handleRegionClick('nsw');
+                  }
+                },
+                () => {
+                  alert('Unable to retrieve your location. Please check permissions.');
+                }
+              );
+            }}
+            color="primary"
+          >
+            Allow
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>
   );
 };
-
-/**
- * AboutPage component - provides details about the application.
- */
-interface AboutPageProps {
-  drawerOpen: boolean;
-  toggleDrawer: (open: boolean) => () => void;
-  handleScenarioChange: (newScenario: string) => void;
-}
-function AboutPage(props: AboutPageProps): JSX.Element {
-  const { drawerOpen, toggleDrawer, handleScenarioChange } = props;
-  useEffect(() => {
-    const pageTitle = 'About - Costs This Much';
-    const description = 'Learn about how the site calculates electricity costs for everyday tasks.';
-    document.title = pageTitle;
-    setMetaTag('property', 'og:title', pageTitle);
-    setMetaTag('property', 'og:description', description);
-    setMetaTag('property', 'og:url', window.location.href);
-    setMetaTag('property', 'og:type', 'website');
-    setMetaTag('name', 'DC.title', pageTitle);
-    setMetaTag('name', 'DC.description', description);
-    setMetaTag('name', 'DC.subject', 'About');
-  }, []);
-  return (
-    <Box display="flex" flexDirection="column" minHeight="100vh">
-      <AppBar position="static" sx={{ marginBottom: 2 }}>
-        <Toolbar>
-          <IconButton edge="start" color="inherit" aria-label="menu" onClick={toggleDrawer(true)}>
-            <MenuIcon />
-          </IconButton>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>About</Typography>
-        </Toolbar>
-      </AppBar>
-      <Drawer anchor="left" open={drawerOpen} onClose={toggleDrawer(false)}>
-        <Box sx={{ width: 250 }} role="presentation" onClick={toggleDrawer(false)} onKeyDown={toggleDrawer(false)}>
-          <List>
-            <ListItem button onClick={() => handleScenarioChange('toast')}>
-              <ListItemIcon>
-                <BreakfastDiningIcon />
-              </ListItemIcon>
-              <ListItemText primary="Home" />
-            </ListItem>
-            <ListItem button onClick={() => (window.location.href = '/about')}>
-              <ListItemIcon>
-                <InfoIcon />
-              </ListItemIcon>
-              <ListItemText primary="About" />
-            </ListItem>
-          </List>
-        </Box>
-      </Drawer>
-      <Box component="main" flexGrow={1} p={2}>
-        <Typography variant="h4" gutterBottom>About This Site</Typography>
-        <Typography variant="body1" paragraph>
-          This site aims to help people understand the dynamic nature of electricity pricing.
-          Wholesale rates in the Australian National Electricity Market (AEMO) can change
-          every five minutes. By presenting near real‑time estimates of how much it might cost
-          to complete everyday tasks (such as toasting bread or charging a phone), we hope to
-          demystify how shifts in wholesale prices, network fees, environmental charges, and
-          retail margins combine to influence what you pay.
-        </Typography>
-        <Typography variant="body1" paragraph>
-          The scenarios use typical assumptions for wattage, duration, and consumption.
-          These examples are provided for educational purposes only – individual usage will vary.
-        </Typography>
-        <Typography variant="body1" paragraph>
-          Keep in mind that AEMO pricing is based on National Electricity Market (NEM)
-          time (Australia/Brisbane) and may not match your local time exactly.
-        </Typography>
-        <Typography variant="body1" paragraph>
-          This project was created by Troy Kelly and is licensed under CC0 1.0 Universal.
-          For more details, visit our{' '}
-          <Link href="https://github.com/troykelly/costs-how-much" target="_blank" rel="noopener noreferrer">
-            GitHub repository
-          </Link>.
-        </Typography>
-      </Box>
-      <Box component="footer" sx={{ textAlign: 'center', py: 2 }}>
-        <Typography variant="body2">© 2025 Troy Kelly | CC0 1.0 Universal</Typography>
-      </Box>
-    </Box>
-  );
-}
 
 export default App;
