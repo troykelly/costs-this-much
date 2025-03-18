@@ -5,12 +5,10 @@
  *
  * Updated (18 March 2025):
  * • Production-ready interface (no example placeholders/timeframes).  
- * • Modern layout changes for the header and info boxes as requested:
- *   - Full-width heading in a modern shade of blue, no margins.  
- *   - Region name in the heading’s background colour, bold.  
- *   - Other text in dark grey, numeric values in bold black with a larger font size.  
- *   - The info boxes do not fill the entire width; a vertical line separates each. No box borders.  
- *   - White background for the main area.  
+ * • Modern layout changes for the header and info boxes as requested.
+ * • Now displays two separate sets of cheapest/most expensive values:
+ *   1) "Cheapest Rate" and "Most Expensive Rate" under the header, based on the retail rate (c/kWh). 
+ *   2) "Cheapest" and "Most Expensive" (scenario cost in dollars) below the current scenario cost block.
  *
  * Author: Troy Kelly <troy@troykelly.com>
  * Original: 16 March 2025
@@ -24,8 +22,6 @@ import {
   CardContent,
   Typography,
   CircularProgress,
-  Tooltip,
-  IconButton,
   Link,
   Button,
   FormControl,
@@ -51,8 +47,6 @@ import {
   Paper
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import InfoIcon from '@mui/icons-material/Info';
-import RefreshIcon from '@mui/icons-material/Refresh';
 import StarIcon from '@mui/icons-material/Star';
 import WarningIcon from '@mui/icons-material/Warning';
 import ElectricBoltIcon from '@mui/icons-material/ElectricBolt';
@@ -61,7 +55,7 @@ import { EnergyScenarios } from './energyScenarios';
 import statesData from '../data/au-states.json';
 
 /**
- * Maps region keys to a more descriptive string for display.
+ * Maps region keys to a descriptive string for display.
  */
 const regionNameMap: Record<string, string> = {
   nsw: 'New South Wales',
@@ -82,8 +76,7 @@ function formatCurrency(amount: number): string {
 }
 
 /**
- * Formats an ISO8601 date string into a localised date/time string (Australia/Brisbane),
- * appending " (NEM Time)".
+ * Returns a full date/time string with "NEM Time" for display (ISO8601 + +10:00).
  */
 function formatIntervalDate(dateString: string): string {
   if (!dateString) return '';
@@ -102,7 +95,23 @@ function formatIntervalDate(dateString: string): string {
 }
 
 /**
- * Returns the scenario key from the subdomain (preferred) or query string (dev).
+ * Formats a short "day + 24 hour AEMO TIME" string (e.g. "Mon 14:05 AEMO TIME").
+ */
+function formatDayTimeAemoString(dateString: string): string {
+  if (!dateString) return '';
+  const d = new Date(dateString + '+10:00');
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone: 'Australia/Brisbane',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  };
+  return d.toLocaleString('en-AU', options) + ' AEMO TIME';
+}
+
+/**
+ * Derives the scenario from subdomain (preferred) or from a "s" param.
  */
 function getScenarioKey(): string {
   const hostParts = window.location.hostname.split('.');
@@ -115,6 +124,9 @@ function getScenarioKey(): string {
   return paramScenario ? paramScenario.toLowerCase() : '';
 }
 
+/**
+ * Sets (or updates) a meta tag on the document head.
+ */
 function setMetaTag(attrName: string, attrValue: string, content: string): void {
   let element = document.querySelector(`meta[${attrName}="${attrValue}"]`);
   if (!element) {
@@ -125,7 +137,9 @@ function setMetaTag(attrName: string, attrValue: string, content: string): void 
   element.setAttribute('content', content);
 }
 
-// -------------- Minimal Ray-casting + state mapping code --------------
+/**
+ * Minimal geo checks: see if lat/lon in polygon => state name, map that => region key.
+ */
 function isPointInPolygon(polygon: number[][], lat: number, lon: number): boolean {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -173,7 +187,7 @@ function mapStateNameToRegionKey(stateName: string): string | null {
 }
 
 /**
- * Minimal inline region map icons (placeholder shapes for each region).
+ * Minimal placeholder region shapes for the UI.
  */
 function getRegionSvg(region: string): string {
   const svgs: Record<string, string> = {
@@ -187,7 +201,7 @@ function getRegionSvg(region: string): string {
 }
 
 /**
- * Simple 48-hour sparkline for the scenario cost.
+ * A 48-hour sparkline for the scenario cost.
  */
 interface SparklineChartProps {
   todayIntervals: AemoInterval[];
@@ -210,10 +224,11 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
   const svgHeight = 60;
   const padding = 5;
 
-  // Gather costs
-  const allCosts = [...todayIntervals, ...yesterdayIntervals].map(iv =>
-    EnergyScenarios.getCostForScenario(scenarioKey, getRetailRateFromInterval(iv, region, false, true))
-  );
+  // Gather scenario cost data
+  const allCosts = [...todayIntervals, ...yesterdayIntervals].map(iv => {
+    const rate = getRetailRateFromInterval(iv, region, false, true);
+    return EnergyScenarios.getCostForScenario(scenarioKey, rate);
+  });
   const maxCost = allCosts.length > 0 ? Math.max(...allCosts) : 0;
   const useLogScale = maxCost > 1;
   const offset = 1;
@@ -222,7 +237,6 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
     maxScaled = Math.max(...allCosts.map(c => Math.log(c + offset)));
   }
 
-  // For the 24h referencing
   function getBrisbaneNow(): Date {
     const now = new Date();
     const brisbaneOffsetMinutes = 10 * 60;
@@ -246,6 +260,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
       const rate = getRetailRateFromInterval(iv, region, false, true);
       const cost = EnergyScenarios.getCostForScenario(scenarioKey, rate);
       const x = computeX(dt, base);
+
       let scaledCost = cost;
       if (useLogScale) {
         scaledCost = Math.log(cost + offset);
@@ -256,6 +271,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
     }).join(' ');
     return { poly, dataPoints };
   }
+
   const yRef = svgHeight - padding - (((useLogScale ? Math.log(maxCost + offset) : maxCost) / (maxScaled || 1)) * (svgHeight - 2 * padding));
 
   const todayData = computePoints(todayIntervals, recentPeriodBase);
@@ -347,7 +363,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({ todayIntervals, yesterd
 };
 
 /**
- * Show a 404 if scenario is missing.
+ * 404 scenario not found.
  */
 function ScenarioNotFound({ scenarioKey }: { scenarioKey: string }): JSX.Element {
   return (
@@ -364,7 +380,7 @@ function ScenarioNotFound({ scenarioKey }: { scenarioKey: string }): JSX.Element
 }
 
 /**
- * AboutPage
+ * About page
  */
 interface AboutPageProps {}
 export function AboutPage(_: AboutPageProps): JSX.Element {
@@ -412,26 +428,43 @@ export function AboutPage(_: AboutPageProps): JSX.Element {
 }
 
 /**
- * Main App
+ * Main application
  */
 const App: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
+
+  // "Current" interval results
   const [rrpCentsPerKWh, setRrpCentsPerKWh] = useState<number>(0);
   const [finalRateCents, setFinalRateCents] = useState<number>(0);
   const [toastCostDollars, setToastCostDollars] = useState<number>(0);
   const [usedIntervalDate, setUsedIntervalDate] = useState<string>('');
-  const [regionIntervals, setRegionIntervals] = useState<AemoInterval[]>([]);
+
+  // All intervals and region intervals
   const [allIntervals, setAllIntervals] = useState<AemoInterval[]>([]);
+  const [regionIntervals, setRegionIntervals] = useState<AemoInterval[]>([]);
+
+  // For scenario cost min/max
+  const [lowestScenarioCost, setLowestScenarioCost] = useState<number>(0);
+  const [lowestScenarioTimestamp, setLowestScenarioTimestamp] = useState<string>('');
+  const [highestScenarioCost, setHighestScenarioCost] = useState<number>(0);
+  const [highestScenarioTimestamp, setHighestScenarioTimestamp] = useState<string>('');
+
+  // For retail rate min/max
+  const [lowestRetailRate, setLowestRetailRate] = useState<number>(0);
+  const [lowestRetailRateTimestamp, setLowestRetailRateTimestamp] = useState<string>('');
+  const [highestRetailRate, setHighestRetailRate] = useState<number>(0);
+  const [highestRetailRateTimestamp, setHighestRetailRateTimestamp] = useState<string>('');
+
+  // Location
   const [locationDialogOpen, setLocationDialogOpen] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Region determination
   const isDevMode = window.location.hostname.includes('localhost') || window.location.hostname.includes('127.');
-
-  // Determine region from path
   const pathParts = window.location.pathname.split('/');
   const regionKey = pathParts[1]?.toLowerCase() || 'nsw';
 
-  // If about page
+  // If about
   if (regionKey === 'about') {
     return <AboutPage />;
   }
@@ -447,7 +480,7 @@ const App: React.FC = () => {
     return <ScenarioNotFound scenarioKey={scenarioKeyStr} />;
   }
 
-  // Region mapping for the AEMO intervals
+  // Region mapping
   const regionMapping: Record<string, string> = {
     nsw: 'NSW1',
     qld: 'QLD1',
@@ -457,12 +490,13 @@ const App: React.FC = () => {
   };
   const regionFilter = regionMapping[regionKey] ?? 'NSW1';
 
-  // Page meta tags
+  // Page meta
   useEffect(() => {
     const scenarioTitle = scenarioData.name;
     const regionUpper = regionKey.toUpperCase();
     const pageTitle = `Cost to ${scenarioTitle} in ${regionUpper}`;
     document.title = pageTitle;
+
     setMetaTag('property', 'og:title', pageTitle);
     setMetaTag('property', 'og:description', scenarioData.description);
     setMetaTag('property', 'og:url', window.location.href);
@@ -498,6 +532,7 @@ const App: React.FC = () => {
     try {
       setLoading(true);
       setError(null);
+
       const response = await fetch('https://visualisations.aemo.com.au/aemo/apps/api/report/5MIN', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -507,12 +542,15 @@ const App: React.FC = () => {
         throw new Error(`Network response not OK: ${response.status}`);
       }
       const data: { '5MIN': AemoInterval[] } = await response.json();
+
       setAllIntervals(data['5MIN']);
+
       const regData: AemoInterval[] = data['5MIN'].filter(iv => iv.REGIONID === regionFilter);
       regData.sort((a, b) => new Date(a.SETTLEMENTDATE).getTime() - new Date(b.SETTLEMENTDATE).getTime());
       setRegionIntervals(regData);
 
       if (regData.length > 0) {
+        // Latest interval for region
         const latest = regData[regData.length - 1];
         let wholesale = latest.RRP * 0.1;
         if (wholesale < 0) wholesale = 0;
@@ -530,11 +568,67 @@ const App: React.FC = () => {
         setFinalRateCents(0);
         setToastCostDollars(0);
       }
+
+      // Compute cheapest/most expensive retail rates in region
+      let minRate = Number.MAX_VALUE;
+      let maxRate = -Infinity;
+      let minRateTS = '';
+      let maxRateTS = '';
+      regData.forEach(iv => {
+        const r = getRetailRateFromInterval(iv, regionKey as SupportedRegion, false, true);
+        if (r < minRate) {
+          minRate = r;
+          minRateTS = iv.SETTLEMENTDATE;
+        }
+        if (r > maxRate) {
+          maxRate = r;
+          maxRateTS = iv.SETTLEMENTDATE;
+        }
+      });
+      if (regData.length === 0) {
+        minRate = 0;
+        maxRate = 0;
+      }
+      setLowestRetailRate(minRate);
+      setLowestRetailRateTimestamp(minRateTS);
+      setHighestRetailRate(maxRate);
+      setHighestRetailRateTimestamp(maxRateTS);
+
+      // Compute cheapest/most expensive scenario cost
+      let minScenarioCost = Number.MAX_VALUE;
+      let maxScenarioCost = -Infinity;
+      let minScenTS = '';
+      let maxScenTS = '';
+      regData.forEach(iv => {
+        const retRate = getRetailRateFromInterval(iv, regionKey as SupportedRegion, false, true);
+        const scenarioCost = EnergyScenarios.getCostForScenario(scenarioKeyStr, retRate);
+        if (scenarioCost < minScenarioCost) {
+          minScenarioCost = scenarioCost;
+          minScenTS = iv.SETTLEMENTDATE;
+        }
+        if (scenarioCost > maxScenarioCost) {
+          maxScenarioCost = scenarioCost;
+          maxScenTS = iv.SETTLEMENTDATE;
+        }
+      });
+      if (regData.length === 0) {
+        minScenarioCost = 0;
+        maxScenarioCost = 0;
+      }
+      setLowestScenarioCost(minScenarioCost);
+      setLowestScenarioTimestamp(minScenTS);
+      setHighestScenarioCost(maxScenarioCost);
+      setHighestScenarioTimestamp(maxScenTS);
+
     } catch (err: any) {
       setError(err.message || 'Failed to fetch AEMO data.');
       setRrpCentsPerKWh(0);
       setFinalRateCents(0);
       setToastCostDollars(0);
+      setLowestRetailRate(0);
+      setHighestRetailRate(0);
+      setLowestScenarioCost(0);
+      setHighestScenarioCost(0);
     } finally {
       setLoading(false);
     }
@@ -546,27 +640,7 @@ const App: React.FC = () => {
     return () => clearInterval(intervalId);
   }, [regionFilter, scenarioKeyStr]);
 
-  // For last 48 hours usage
-  function getBrisbaneNow(): Date {
-    const now = new Date();
-    const brisbaneOffsetMinutes = 10 * 60;
-    const localOffsetMinutes = now.getTimezoneOffset();
-    return new Date(now.getTime() + (brisbaneOffsetMinutes + localOffsetMinutes) * 60000);
-  }
-  const brisbaneNow = getBrisbaneNow();
-  const twentyFourHoursAgo = new Date(brisbaneNow.getTime() - 24 * 60 * 60 * 1000);
-  const fortyEightHoursAgo = new Date(brisbaneNow.getTime() - 48 * 60 * 60 * 1000);
-
-  const recent24Intervals = regionIntervals.filter(iv => {
-    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
-    return d >= twentyFourHoursAgo && d <= brisbaneNow;
-  });
-  const previous24Intervals = regionIntervals.filter(iv => {
-    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
-    return d >= fortyEightHoursAgo && d < twentyFourHoursAgo;
-  });
-
-  // Summaries
+  // Summaries (a list of daily min/max for reference)
   interface DailySummary {
     date: string;
     minWholesale: number;
@@ -577,64 +651,55 @@ const App: React.FC = () => {
   function computeDailySummaries(intervals: AemoInterval[], region: SupportedRegion): DailySummary[] {
     const summaryMap: Record<string, DailySummary> = {};
     intervals.forEach(iv => {
-      const d = new Date(iv.SETTLEMENTDATE + '+10:00');
-      const dateKey = d.toLocaleDateString('en-AU', { timeZone: 'Australia/Brisbane' });
+      const dt = new Date(iv.SETTLEMENTDATE + '+10:00');
+      const dateKey = dt.toLocaleDateString('en-AU', { timeZone: 'Australia/Brisbane' });
       let wholesale = iv.RRP * 0.1;
       if (wholesale < 0) wholesale = 0;
       const retail = getRetailRateFromInterval(iv, region, false, true);
       if (!summaryMap[dateKey]) {
-         summaryMap[dateKey] = {
-            date: dateKey,
-            minWholesale: wholesale,
-            minRetail: retail,
-            maxWholesale: wholesale,
-            maxRetail: retail
-         };
+        summaryMap[dateKey] = {
+          date: dateKey,
+          minWholesale: wholesale,
+          minRetail: retail,
+          maxWholesale: wholesale,
+          maxRetail: retail
+        };
       } else {
-         summaryMap[dateKey].minWholesale = Math.min(summaryMap[dateKey].minWholesale, wholesale);
-         summaryMap[dateKey].minRetail = Math.min(summaryMap[dateKey].minRetail, retail);
-         summaryMap[dateKey].maxWholesale = Math.max(summaryMap[dateKey].maxWholesale, wholesale);
-         summaryMap[dateKey].maxRetail = Math.max(summaryMap[dateKey].maxRetail, retail);
+        summaryMap[dateKey].minWholesale = Math.min(summaryMap[dateKey].minWholesale, wholesale);
+        summaryMap[dateKey].minRetail = Math.min(summaryMap[dateKey].minRetail, retail);
+        summaryMap[dateKey].maxWholesale = Math.max(summaryMap[dateKey].maxWholesale, wholesale);
+        summaryMap[dateKey].maxRetail = Math.max(summaryMap[dateKey].maxRetail, retail);
       }
     });
     return Object.values(summaryMap).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   }
   const dailySummaries = computeDailySummaries(regionIntervals, regionKey as SupportedRegion);
 
-  // cheapest / most expensive scenario cost
-  type PriceInfo = { cost: number; timestamp: string };
-  let lowestScenario: PriceInfo = { cost: 0, timestamp: '' };
-  let highestScenario: PriceInfo = { cost: 0, timestamp: '' };
-  if (regionIntervals.length > 0) {
-    let minCost = Number.MAX_VALUE;
-    let maxCost = -Infinity;
-    let minInterval: AemoInterval | null = null;
-    let maxInterval: AemoInterval | null = null;
-    regionIntervals.forEach(iv => {
-      const retailRate = getRetailRateFromInterval(iv, regionKey as SupportedRegion, false, true);
-      const cost = EnergyScenarios.getCostForScenario(scenarioKeyStr, retailRate);
-      if (cost < minCost) {
-        minCost = cost;
-        minInterval = iv;
-      }
-      if (cost > maxCost) {
-        maxCost = cost;
-        maxInterval = iv;
-      }
-    });
-    if (minInterval) {
-      lowestScenario = { cost: minCost, timestamp: minInterval.SETTLEMENTDATE };
-    }
-    if (maxInterval) {
-      highestScenario = { cost: maxCost, timestamp: maxInterval.SETTLEMENTDATE };
-    }
+  // For last 48 hours scenario chart
+  function getBrisbaneNow(): Date {
+    const now = new Date();
+    const brisbaneOffsetMinutes = 10 * 60;
+    const localOffsetMinutes = now.getTimezoneOffset();
+    return new Date(now.getTime() + (brisbaneOffsetMinutes + localOffsetMinutes) * 60000);
   }
+  const brisbaneNow = getBrisbaneNow();
+  const twentyFourHoursAgo = new Date(brisbaneNow.getTime() - 24 * 60 * 60 * 1000);
+  const fortyEightHoursAgo = new Date(brisbaneNow.getTime() - 48 * 60 * 60 * 1000);
+  const recent24Intervals = regionIntervals.filter(iv => {
+    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
+    return d >= twentyFourHoursAgo && d <= brisbaneNow;
+  });
+  const previous24Intervals = regionIntervals.filter(iv => {
+    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
+    return d >= fortyEightHoursAgo && d < twentyFourHoursAgo;
+  });
 
+  // Other regions
   const otherRegions = Object.keys(regionMapping).filter(r => r !== regionKey);
 
   return (
     <Box display="flex" flexDirection="column" minHeight="100vh" bgcolor="#ffffff">
-      {/* Top header bar: modern blue, no margins */}
+      {/* Top header bar */}
       <Box
         sx={{
           backgroundColor: '#2196f3',
@@ -657,10 +722,10 @@ const App: React.FC = () => {
         </Typography>
       </Box>
 
-      {/* Info boxes area */}
+      {/* Header info row */}
       <Box sx={{ borderBottom: '1px solid #CCC', backgroundColor: '#fff', padding: '1rem' }}>
         <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center' }}>
-          {/* Region + map box with right border */}
+          {/* Region ID / Map / Last Interval */}
           <Box
             sx={{
               display: 'flex',
@@ -670,7 +735,6 @@ const App: React.FC = () => {
               marginRight: '1rem'
             }}
           >
-            {/* Full region name in the heading color, bold */}
             <Typography
               sx={{
                 fontWeight: 'bold',
@@ -679,12 +743,10 @@ const App: React.FC = () => {
             >
               {regionNameMap[regionKey] || regionKey.toUpperCase()}
             </Typography>
-
             <Box
               sx={{ mt: 1 }}
               dangerouslySetInnerHTML={{ __html: getRegionSvg(regionKey) }}
             />
-
             {usedIntervalDate && (
               <Typography variant="caption" sx={{ mt: 1, color: '#555' }}>
                 Last interval: {formatIntervalDate(usedIntervalDate)}
@@ -692,9 +754,9 @@ const App: React.FC = () => {
             )}
           </Box>
 
-          {/* Additional items in row */}
+          {/* Four columns: CurrentWholesale, CurrentRetail, CheapestRate, MostExpensiveRate */}
           <Box sx={{ display: 'flex', flexDirection: 'row' }}>
-            {/* 1) Current Wholesale */}
+            {/* Current Wholesale */}
             <Box
               sx={{
                 display: 'flex',
@@ -708,13 +770,18 @@ const App: React.FC = () => {
               {loading ? (
                 <CircularProgress size="1rem" />
               ) : (
-                <Typography sx={{ fontWeight: 'bold', color: '#000', fontSize: '1.5rem' }}>
-                  {(rrpCentsPerKWh / 100).toFixed(2)} $/kWh
-                </Typography>
+                <>
+                  <Typography sx={{ fontWeight: 'bold', color: '#000', fontSize: '1.5rem' }}>
+                    {(rrpCentsPerKWh / 100).toFixed(2)} $/kWh
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: '#555' }}>
+                    {usedIntervalDate && formatDayTimeAemoString(usedIntervalDate)}
+                  </Typography>
+                </>
               )}
             </Box>
 
-            {/* 2) Current Retail */}
+            {/* Current Retail */}
             <Box
               sx={{
                 display: 'flex',
@@ -728,13 +795,18 @@ const App: React.FC = () => {
               {loading ? (
                 <CircularProgress size="1rem" />
               ) : (
-                <Typography sx={{ fontWeight: 'bold', color: '#000', fontSize: '1.5rem' }}>
-                  {(finalRateCents / 100).toFixed(2)} $/kWh
-                </Typography>
+                <>
+                  <Typography sx={{ fontWeight: 'bold', color: '#000', fontSize: '1.5rem' }}>
+                    {(finalRateCents / 100).toFixed(2)} $/kWh
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: '#555' }}>
+                    {usedIntervalDate && formatDayTimeAemoString(usedIntervalDate)}
+                  </Typography>
+                </>
               )}
             </Box>
 
-            {/* 3) Cheapest Rate */}
+            {/* Cheapest Rate */}
             <Box
               sx={{
                 display: 'flex',
@@ -744,48 +816,44 @@ const App: React.FC = () => {
                 paddingRight: '1rem'
               }}
             >
-              <Typography sx={{ color: '#666' }}>Cheapest</Typography>
-              <Typography sx={{ fontWeight: 'bold', color: '#000', fontSize: '1.5rem' }}>
-                {lowestScenario.cost > 0
-                  ? formatCurrency(lowestScenario.cost)
-                  : '$0.00'}
-              </Typography>
+              <Typography sx={{ color: '#666' }}>Cheapest< br/>Rate</Typography>
+              {loading ? (
+                <CircularProgress size="1rem" />
+              ) : (
+                <>
+                  <Typography variant="h5" sx={{ fontWeight: 'bold', lineHeight: 1.2, color: '#000' }}>
+                    {(lowestRetailRate / 100).toFixed(2)} $/kWh
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: '#555' }}>
+                    {formatDayTimeAemoString(lowestRetailRateTimestamp)}
+                  </Typography>
+                </>
+              )}
             </Box>
 
-            {/* 4) Most Expensive */}
+            {/* Most Expensive Rate */}
             <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-              <Typography sx={{ color: '#666' }}>Most< br/>Expensive</Typography>
-              <Typography sx={{ fontWeight: 'bold', color: '#000', fontSize: '1.5rem' }}>
-                {highestScenario.cost > 0
-                  ? formatCurrency(highestScenario.cost)
-                  : '$0.00'}
-              </Typography>
+              <Typography sx={{ color: '#666' }}>Most< br/>Expensive< br/>Rate</Typography>
+              {loading ? (
+                <CircularProgress size="1rem" />
+              ) : (
+                <>
+                  <Typography variant="h5" sx={{ fontWeight: 'bold', lineHeight: 1.2, color: '#000' }}>
+                    {(highestRetailRate / 100).toFixed(2)} $/kWh
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: '#555' }}>
+                    {formatDayTimeAemoString(highestRetailRateTimestamp)}
+                  </Typography>
+                </>
+              )}
             </Box>
           </Box>
         </Box>
-
-        {/* Refresh button */}
-        {/* <Box mt={1}>
-          <Tooltip title="Refresh Data">
-            <IconButton onClick={fetchAemoData}>
-              <RefreshIcon />
-            </IconButton>
-          </Tooltip>
-          {error && (
-            <Alert
-              severity="error"
-              action={<Button color="inherit" size="small" onClick={fetchAemoData}>Retry</Button>}
-              sx={{ mt: 1 }}
-            >
-              {error}
-            </Alert>
-          )}
-        </Box> */}
       </Box>
 
       {/* Body main content */}
       <Box sx={{ p: 2, flexGrow: 1, backgroundColor: '#fff' }}>
-        {/* Big cost in centre */}
+        {/* Big "A X currently costs Y" block */}
         <Box textAlign="center" mt={2}>
           <Typography variant="h6" gutterBottom sx={{ color: '#444' }}>
             A {scenarioData.name.toLowerCase()} currently costs
@@ -805,7 +873,50 @@ const App: React.FC = () => {
           </Typography>
         </Box>
 
-        {/* Other regions (centered) */}
+        {/* Cheapest/Most Expensive scenario cost */}
+        <Box textAlign="center" mt={3}>
+          <Box display="inline-flex" gap={2}>
+            {/* Cheapest scenario */}
+            <Card>
+              <CardContent sx={{ textAlign: 'center' }}>
+                <Typography sx={{ color: '#2196f3' }}>Cheapest</Typography>
+                {loading ? (
+                  <CircularProgress size="1rem" />
+                ) : (
+                  <>
+                    <Typography variant="h5" sx={{ fontWeight: 'bold', lineHeight: 1.2, color: '#000' }}>
+                      {formatCurrency(lowestScenarioCost)}
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: '#555' }}>
+                      {formatDayTimeAemoString(lowestScenarioTimestamp)}
+                    </Typography>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Most Expensive scenario */}
+            <Card>
+              <CardContent sx={{ textAlign: 'center' }}>
+                <Typography sx={{ color: '#2196f3' }}>Most Expensive</Typography>
+                {loading ? (
+                  <CircularProgress size="1rem" />
+                ) : (
+                  <>
+                    <Typography variant="h5" sx={{ fontWeight: 'bold', lineHeight: 1.2, color: '#000' }}>
+                      {formatCurrency(highestScenarioCost)}
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: '#555' }}>
+                      {formatDayTimeAemoString(highestScenarioTimestamp)}
+                    </Typography>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </Box>
+        </Box>
+
+        {/* Other Regions */}
         <Box textAlign="center" mt={3}>
           <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 'bold', color: '#444' }}>
             Other Regions
@@ -838,7 +949,7 @@ const App: React.FC = () => {
                 const cost = item.cost;
                 let tag: ReactNode = null;
                 if (cost === minVal && minVal === maxVal) {
-                  // only if everything is same
+                  // everything is the same
                   tag = <Chip label="CHEAP & EXP" icon={<StarIcon />} color="warning" size="small" sx={{ mt: 1 }} />;
                 } else if (cost === minVal) {
                   tag = <Chip label="CHEAP" icon={<StarIcon />} color="success" size="small" sx={{ mt: 1 }} />;
@@ -872,7 +983,7 @@ const App: React.FC = () => {
           </Box>
         </Box>
 
-        {/* Scenario dropdown (centered) */}
+        {/* Scenario dropdown */}
         <Box mt={3} textAlign="center">
           <Box sx={{ display: 'inline-block', minWidth: 300 }}>
             <FormControl fullWidth>
@@ -893,7 +1004,7 @@ const App: React.FC = () => {
           </Box>
         </Box>
 
-        {/* Assumptions (centered) */}
+        {/* Assumptions */}
         {scenarioData.assumptions && scenarioData.assumptions.length > 0 && (
           <Box mt={3} textAlign="center">
             <Box sx={{ display: 'inline-block', maxWidth: 480, width: '100%' }}>
@@ -915,7 +1026,7 @@ const App: React.FC = () => {
           </Box>
         )}
 
-        {/* Sparkline for last 48h (centered) */}
+        {/* Sparkline for last 48h scenario cost */}
         {!loading && regionIntervals.length > 0 && (
           <SparklineChart
             todayIntervals={recent24Intervals}
@@ -925,7 +1036,7 @@ const App: React.FC = () => {
           />
         )}
 
-        {/* Daily summaries (centered) */}
+        {/* Daily Summaries */}
         <Box mt={3} textAlign="center">
           <Box sx={{ display: 'inline-block', maxWidth: 480, width: '100%' }}>
             <Accordion>
@@ -1015,7 +1126,9 @@ const App: React.FC = () => {
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setLocationDialogOpen(false)} color="error">Deny</Button>
+          <Button onClick={() => setLocationDialogOpen(false)} color="error">
+            Deny
+          </Button>
           <Button
             onClick={() => {
               setLocationDialogOpen(false);
@@ -1051,6 +1164,11 @@ const App: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
+      {error && (
+        <Box sx={{ position: 'fixed', bottom: '1rem', left: '50%', transform: 'translateX(-50%)' }}>
+          <Alert severity="error">{error}</Alert>
+        </Box>
+      )}
     </Box>
   );
 };
