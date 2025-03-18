@@ -43,7 +43,7 @@ export class AemoDataDurableObject {
 
       // In real usage, you'd loop over the AEMO data intervals
       // and insert them if they do not exist. For example:
-      // sql.exec(`INSERT INTO intervals (settlementdate, regionid, rrp) VALUES (?,?,?)`, dateStr, regionId, rrpVal);
+      // sql.exec(\`INSERT INTO intervals (settlementdate, regionid, rrp) VALUES (?,?,?)\`, dateStr, regionId, rrpVal);
 
       return new Response("Sync completed (stub).");
     } catch (err) {

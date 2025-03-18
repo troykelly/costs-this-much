@@ -48,18 +48,21 @@ This will build (if needed) and deploy the Worker code to your assigned Cloudfla
 
 ## File Layout
 
-- wrangler.toml: The Worker configuration and Durable Object definitions.  
+- wrangler.toml (now wrangler.logger.toml): The Worker configuration (scheduled/cron) and Durable Object definitions.  
+- wrangler.api.toml: The Worker configuration for the API mode, also referencing the same Durable Object.  
 - package.json: Scripts for dev/publish.  
 - src/index.ts: Entry point for the Worker event listeners (scheduled/cron).  
 - src/AemoDataDurableObject.ts: Durable Object class with SQL backend.  
-- src/docs/sql-storage.md: Example documentation snippet for using the SQL API in Durable Objects.
+- src/docs/sql-storage.md: Example documentation snippet for using the SQL API in Durable Objects.  
+- src/api/*: The API code and logic for authentication, token issuance, and data retrieval.
 
 --------------------------------------------------------------------------------
 
 ## Next Steps
 
 • Supply your AEMO fetch logic in src/index.ts, referencing the Durable Object (AemoDataDurableObject) to store the intervals.  
-• Customise the schedule trigger in wrangler.toml.  
-• Add advanced logic for partial outages, error handling and performance monitoring.  
+• Customise the schedule trigger in wrangler.logger.toml.  
+• Use wrangler.api.toml to run the API code (src/api/index.ts).  
+• Add advanced logic for partial outages, error handling, and performance monitoring.  
 
 --------------------------------------------------------------------------------

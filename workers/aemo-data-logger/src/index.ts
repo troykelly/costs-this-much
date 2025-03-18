@@ -20,7 +20,7 @@ export default {
     // 1. Identify which intervals are missing in the last 36 hours
     // 2. Fetch from AEMO (36 hours worth) but process only needed intervals
     // 3. Insert them into SQL DO
-    // 
+    //
     // This is just a stub. Extend as necessary.
 
     try {

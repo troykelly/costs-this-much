@@ -1,0 +1,26 @@
+name = "api-worker"
+compatibility_date = "2025-03-18"
+main = "src/api/index.ts"
+account_id = "YOUR_ACCOUNT_ID"
+workers_dev = true
+
+[[durable_objects]]
+name = "AemoDataDO"
+class_name = "AemoDataDurableObject"
+type = "sql"
+script_name = "aemo-data-logger"
+
+[vars]
+CLIENT_IDS = "[\"insert-some-uuid-here\", \"another-uuid-here\"]"
+
+SIGNING_KEYS = """
+[
+  {
+    \"private\":\"-----BEGIN PRIVATE KEY-----\\nABC123...\\n-----END PRIVATE KEY-----\",
+    \"public\":\"-----BEGIN PUBLIC KEY-----\\nXYZ456...\\n-----END PUBLIC KEY-----\",
+    \"start\":\"2025-01-01T00:00:00Z\",
+    \"end\":\"2026-01-01T00:00:00Z\",
+    \"revoked\":false
+  }
+]
+"""
