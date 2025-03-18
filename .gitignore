@@ -1,6 +1,7 @@
 # App
 .env
 frontend/dist
+.wrangler
 
 # TypeScript
 node_modules/

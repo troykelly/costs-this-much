@@ -85,10 +85,28 @@ export class AemoData implements DurableObject {
 
     // Create (or no-op if it already exists) an "intervals" table.
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS intervals (
-        settlementdate TEXT PRIMARY KEY,
-        regionid TEXT,
-        rrp NUMERIC
+      -- This schema uses Unix epoch seconds (an INTEGER) for settlementdate.
+      CREATE TABLE IF NOT EXISTS aemo_five_min_data (
+          settlement_ts             INTEGER NOT NULL,
+          regionid                  TEXT    NOT NULL,
+          region                    TEXT,
+          rrp                       REAL,
+          totaldemand              REAL,
+          periodtype               TEXT,
+          netinterchange           REAL,
+          scheduledgeneration      REAL,
+          semischeduledgeneration  REAL,
+          apcflag                  REAL,
+          PRIMARY KEY (settlement_ts, regionid)
+      );
+
+      -- Index to quickly search by region and date/time range
+      CREATE INDEX IF NOT EXISTS idx_aemo_five_min_data_regionid_ts
+          ON aemo_five_min_data (regionid, settlement_ts);
+
+      -- Index to quickly search by date/time alone
+      CREATE INDEX IF NOT EXISTS idx_aemo_five_min_data_ts
+          ON aemo_five_min_data (settlement_ts);
       );
     `);
 
