@@ -202,7 +202,7 @@ export class AemoData implements DurableObject {
     }
 
     // Convert raw records to our intervals structure,
-    // incorporating a parse function to ensure correct offset for AEMO time.
+    // carefully parsing the timestamp to avoid NaN results.
     const intervals: AemoInterval[] = data["5MIN"].map((item) => {
       const settlementTs = this.parseAemoDate(item.SETTLEMENTDATE);
       return {
@@ -241,6 +241,7 @@ export class AemoData implements DurableObject {
       };
     });
 
+    // If everything parsed to NaN, we won't have meaningful comparisons. Check below.
     if (intervals.length === 0) {
       this.log("WARNING", "No intervals found in AEMO data. Aborting.");
       return new Response("No intervals found in AEMO data. Aborting.", {
@@ -254,6 +255,15 @@ export class AemoData implements DurableObject {
       if (i.settlement_ts < earliest) earliest = i.settlement_ts;
       if (i.settlement_ts > latest) latest = i.settlement_ts;
     }
+
+    // If earliest or latest is NaN, all comparisons will fail. Log and skip if that occurs.
+    if (Number.isNaN(earliest) || Number.isNaN(latest)) {
+      this.log("ERROR", "Parsed settlement_ts is NaN—check input date format and offset handling. Aborting.");
+      return new Response("Some or all settlement_ts values were NaN. Aborting due to invalid date parse.", {
+        status: 500
+      });
+    }
+
     this.log("DEBUG", `Earliest settlement time: ${earliest}, latest: ${latest}`);
 
     this.log("INFO", "Step 3: Generating a list of unique regions included in the data...");
@@ -286,6 +296,15 @@ export class AemoData implements DurableObject {
     this.log("INFO", "Step 5: Inserting or updating records (upsert) in the database...");
     let upsertCount = 0;
     for (const interval of intervals) {
+      // If settlement_ts is invalid, we skip the row.
+      if (Number.isNaN(interval.settlement_ts)) {
+        this.log(
+          "ERROR",
+          `Skipping record due to NaN settlement: date="${interval.settlementdate}", regionid=${interval.regionid}`
+        );
+        continue;
+      }
+
       this.log(
         "DEBUG", 
         `Upserting interval: settlement_ts=${interval.settlement_ts}, regionid=${interval.regionid}`
@@ -346,18 +365,35 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Convert AEMO settlement date into a Unix epoch (in seconds) with an assumed
-   * offset for Australian Eastern time. This approach is simplistic and does
-   * not dynamically account for Daylight Saving Time transitions.
+   * Parses a date string from AEMO into a Unix epoch (seconds).  
+   *
+   * This tries Date.parse() on the raw string first. If no time zone is present,
+   * we append "+10:00" to interpret it as AEST, which may need to be adjusted
+   * seasonally for real usage if the data includes daylight saving transitions.  
+   * 
+   * If parsing still fails, returns NaN and logs an error.  
    *
    * @param dateStr AEMO-supplied settlement date string
-   * @return The Unix epoch (seconds) adjusted for approximate AEMO offset
+   * @return The Unix epoch (seconds), or NaN if parsing fails
    */
   private parseAemoDate(dateStr: string): number {
-    // The following creates a date by appending 'GMT+10' to interpret as AEST.
-    // A more robust approach would handle DST programmatically or parse the
-    // date/time correctly if the API includes timezone info. 
-    const ms = Date.parse(`${dateStr} GMT+10`);
+    // Log the input for debugging
+    this.log("DEBUG", `parseAemoDate input: "${dateStr}"`);
+
+    let ms = Date.parse(dateStr);
+
+    // If still NaN, try appending +10:00 if no timezone is present
+    if (Number.isNaN(ms) && !/([Zz]|[\+\-]\d\d:?\d\d)$/.test(dateStr.trim())) {
+      const appended = `${dateStr.trim()} +10:00`;
+      this.log("DEBUG", `parseAemoDate appending +10:00 to form: "${appended}"`);
+      ms = Date.parse(appended);
+    }
+
+    if (Number.isNaN(ms)) {
+      this.log("ERROR", `Could not parse AEMO date: "${dateStr}".`);
+      return NaN;
+    }
+
     return Math.floor(ms / 1000);
   }
 
