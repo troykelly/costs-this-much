@@ -6,7 +6,7 @@
  * - Data is fetched from the AEMO_API_URL, which is expected to return an array
  *   of interval objects containing SETTLEMENTDATE, REGIONID, and RRP.
  * - The data is stored in a table named "intervals", keyed by settlementdate.
- * - Duplicate entries are skipped based on the primary key.
+ * - Duplicate entries are now skipped via an INSERT OR IGNORE approach.
  */
 
 import type { DurableObjectState } from '@cloudflare/workers-types';
@@ -65,7 +65,7 @@ export class AemoData {
    * 1) Calculates the 36-hour time range from the current time.
    * 2) Fetches data from the AEMO API using the environment variables.
    * 3) Creates and/or ensures the "intervals" table exists.
-   * 4) Inserts newly discovered intervals, skipping duplicates.
+   * 4) Inserts newly discovered intervals, skipping duplicates using INSERT OR IGNORE.
    * 5) Returns a summary of the operation.
    *
    * @private
@@ -121,27 +121,18 @@ export class AemoData {
         );
       `);
 
-      // Insert new intervals, skipping duplicates.
+      // Insert new intervals via INSERT OR IGNORE to avoid duplicates.
       let insertedCount = 0;
       this.state.storage.transactionSync((txn) => {
         const tsql = txn.sql;
         for (const interval of intervals) {
-          try {
-            // Attempt a plain INSERT. If a record with the same settlementdate
-            // exists, it will trigger a unique constraint error.
-            tsql.exec(
-              `INSERT INTO intervals (settlementdate, regionid, rrp) VALUES (?, ?, ?)`,
-              interval.settlementdate,
-              interval.regionid,
-              interval.rrp
-            );
-            insertedCount++;
-          } catch (e: any) {
-            // If the error is due to the unique constraint, ignore. Otherwise, rethrow.
-            if (!String(e.message).includes("UNIQUE constraint failed")) {
-              throw e;
-            }
-          }
+          const cursor = tsql.exec(
+            `INSERT OR IGNORE INTO intervals (settlementdate, regionid, rrp) VALUES (?, ?, ?)`,
+            interval.settlementdate,
+            interval.regionid,
+            interval.rrp
+          );
+          insertedCount += cursor.rowsWritten;
         }
       });
 

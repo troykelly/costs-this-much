@@ -6,8 +6,8 @@
  *
  * Usage:
  *  - Invoked automatically via schedule triggers.
- *  - The scheduled handler calls the associated Durable Object to perform
- *    the actual data fetch and insert operations.
+ *  - For local testing of scheduled behavior, run `wrangler dev --test-scheduled`
+ *    and then invoke the endpoint at /__scheduled?cron=*+*+*+*+* (or a custom cron pattern).
  */
 
 export { AemoData } from './AemoDataDurableObject';
@@ -50,32 +50,17 @@ export default {
 
   /**
    * Standard fetch handler. This Worker primarily relies on scheduled events
-   * for operation. The fetch handler can still serve requests for manual testing
-   * or debugging if desired.
+   * for operation. For local dev scheduled testing, run `wrangler dev --test-scheduled`
+   * and invoke the /__scheduled route.
    *
    * @param {Request} request The incoming request.
    * @param {Env} env The environment variables and bindings.
    * @param {ExecutionContext} ctx The execution context for asynchronous tasks.
-   * @returns {Promise<Response>} A basic response indicating the Worker is live or triggers manual sync.
+   * @returns {Promise<Response>} A basic response indicating the Worker is live.
    */
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-
-    // Allow manual triggering of the sync in local dev.
-    if (url.pathname === '/trigger' && request.method === 'POST') {
-      try {
-        const id = env.AemoData.idFromName("AEMO_LOGGER");
-        const obj = env.AemoData.get(id);
-        await obj.fetch("https://dummy-url/sync", { method: "POST" });
-        return new Response("Local data sync triggered successfully.\n", { status: 200 });
-      } catch (err) {
-        console.error("Local dev trigger error:", err);
-        return new Response("Local dev trigger failed.\n", { status: 500 });
-      }
-    }
-
     return new Response(
-      "AEMO DataLogger Worker. Use schedule triggers for normal operation.\n",
+      "AEMO DataLogger Worker. Scheduled triggers perform the ingestion.\n",
       { headers: { "content-type": "text/plain" } }
     );
   },

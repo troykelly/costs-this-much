@@ -32,8 +32,9 @@ Key steps in this mode:
 1. **Scheduled Execution**: Runs every 5 minutes offset by 1 minute (e.g., 01, 06, 11, 16...).  
 2. **Missing Data Detection** (Future Implementation Needed):  
    - Determine which intervals in the last 36 hours are not in the DO’s database.  
-3. **Fetching & Insertion** (Scaffolded):  
+3. **Fetching & Insertion**:  
    - Retrieve data from AEMO, parse the intervals, and insert new records into the Durable Object’s SQL database.  
+   - Duplicate records are skipped by an “INSERT OR IGNORE” approach to prevent re-inserting intervals.  
 4. **Error Handling** (Future Implementation Needed):  
    - Properly handle network or data inaccuracies. Possibly re-fetch on failures.  
 
@@ -63,15 +64,17 @@ Key endpoints (placeholders):
 1. **Install Dependencies**  
    - From the repo root, run:  
      yarn install
-   - Then `cd workers/aemo-data-logger`.
+   - Then cd into this folder:  
+     cd workers/aemo-data-logger
 
 2. **Run Logger Mode**  
    - Prepare a local environment and run:  
      yarn dev:logger
    - This uses “wrangler.logger.toml” and follows the code in “src/index.ts”.  
-   - Note: Cron triggers are not automatically fired locally; you can invoke them manually or rely on console/fetch testing.  
-   - Additionally, to manually trigger a data sync in local development, you can send a POST request to the Worker at “/trigger”. For example:
-     curl -X POST http://127.0.0.1:8787/trigger
+   - Note: Cron triggers are not automatically fired locally unless you use the Wrangler “test scheduled” mechanism.  
+   - To invoke scheduled logic for testing, run:  
+     npx wrangler dev --test-scheduled  
+     curl "http://127.0.0.1:8787/__scheduled?cron=*+*+*+*+*"
 
 3. **Run API Mode**  
    - To start the API in local dev mode, run:  
@@ -79,8 +82,8 @@ Key endpoints (placeholders):
    - This uses “wrangler.api.toml” and hosts the endpoints in “src/api/index.ts”.  
 
 4. **Testing**  
-   - For the API, test endpoints with cURL or Postman (e.g., “GET /data”).  
-   - For the logger, you can check logs or manually call the Worker’s fetch event.  
+   - For the API, test endpoints with curl or Postman (e.g., “GET /data”).  
+   - For the logger in local development, trigger the scheduled event as shown above.  
 
 --------------------------------------------------------------------------------
 

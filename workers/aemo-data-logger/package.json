@@ -7,8 +7,8 @@
     "dev": "wrangler dev",
     "publish": "wrangler publish",
     "build": "echo \"No build step needed at this time.\"",
-    "dev:logger": "wrangler dev --config wrangler.logger.toml",
-    "dev:api": "wrangler dev --config wrangler.api.toml",
+    "dev:logger": "wrangler dev --config wrangler.logger.toml --test-scheduled --ip=:: --port=8788",
+    "dev:api": "wrangler dev --config wrangler.api.toml --ip=:: --port=8787",
     "publish:logger": "wrangler publish --config wrangler.logger.toml",
     "publish:api": "wrangler publish --config wrangler.api.toml"
   },
