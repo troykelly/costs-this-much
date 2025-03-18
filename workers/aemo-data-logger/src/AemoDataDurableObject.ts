@@ -1,10 +1,10 @@
 /**
  * @fileoverview Durable Object that stores AEMO intervals in a Cloudflare SQL-based backend.
  *
- * This updated version follows the new Cloudflare Durable Object + SQL model and adds
- * an environment-based debugging mechanism. If LOG_LEVEL is set to "INFO" or "DEBUG",
- * the DO will log what it's doing (retrieving data, which records are being processed,
- * etc.).
+ * This version aims to ensure that the settlement timestamps are stored in a consistent epoch format
+ * by manually parsing the AEMO-supplied date strings as local Australian Eastern Time (UTC+10) and
+ * converting them to UTC seconds. Note that this approach does not handle Daylight Saving Time
+ * boundaries—if DST is relevant to your data, additional logic is required.
  */
 
 import type {
@@ -78,14 +78,15 @@ export interface AemoApiResponse {
   "5MIN": {
     SETTLEMENTDATE: string;
     REGIONID: string;
+    // Some additional fields are shown in the data, but RRP is critical for identification
     RRP: string | number;
     TOTALDEMAND?: string | number;
     PERIODTYPE?: string;
     NETINTERCHANGE?: string | number;
     SCHEDULEDGENERATION?: string | number;
-    SEMISCHEduledGENERATION?: string | number; // Some AEMO data sources may differ in naming/casing
-    SEMISCHEcheduledGENERATION?: string | number; // Variation placeholders
-    SEMISCHECHEDULEDGENERATION?: string | number; // Variation placeholders
+    SEMISCHEduledGENERATION?: string | number;
+    SEMISCHEcheduledGENERATION?: string | number;
+    SEMISCHECHEDULEDGENERATION?: string | number;
     APCFLAG?: string | number;
   }[];
 }
@@ -145,7 +146,6 @@ export class AemoData implements DurableObject {
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-
     if (request.method === "POST" && url.pathname === "/sync") {
       return this.handleSync();
     }
@@ -201,10 +201,10 @@ export class AemoData implements DurableObject {
       });
     }
 
-    // Convert raw records to our intervals structure,
-    // carefully parsing the timestamp to avoid NaN results.
+    // Convert raw records to our intervals structure, carefully parsing the timestamp
+    // so we consistently store the time as epoch in UTC. This does not handle DST.
     const intervals: AemoInterval[] = data["5MIN"].map((item) => {
-      const settlementTs = this.parseAemoDate(item.SETTLEMENTDATE);
+      const settlementTs = this.parseAemoDateToUtc(item.SETTLEMENTDATE);
       return {
         settlementdate: item.SETTLEMENTDATE,
         settlement_ts: settlementTs,
@@ -223,7 +223,6 @@ export class AemoData implements DurableObject {
           ? parseFloat(String(item.SCHEDULEDGENERATION))
           : null,
         semischeduledgeneration: (() => {
-          // Attempt to accommodate minor naming variations
           if (item.SEMISCHEduledGENERATION !== undefined) {
             return parseFloat(String(item.SEMISCHEduledGENERATION));
           }
@@ -241,14 +240,12 @@ export class AemoData implements DurableObject {
       };
     });
 
-    // If everything parsed to NaN, we won't have meaningful comparisons. Check below.
-    if (intervals.length === 0) {
+    if (!intervals.length) {
       this.log("WARNING", "No intervals found in AEMO data. Aborting.");
-      return new Response("No intervals found in AEMO data. Aborting.", {
-        status: 200
-      });
+      return new Response("No intervals found in AEMO data. Aborting.", { status: 200 });
     }
 
+    // Identify earliest and latest settlement_ts
     let earliest = intervals[0].settlement_ts;
     let latest = intervals[0].settlement_ts;
     for (const i of intervals) {
@@ -256,12 +253,12 @@ export class AemoData implements DurableObject {
       if (i.settlement_ts > latest) latest = i.settlement_ts;
     }
 
-    // If earliest or latest is NaN, all comparisons will fail. Log and skip if that occurs.
-    if (Number.isNaN(earliest) || Number.isNaN(latest)) {
-      this.log("ERROR", "Parsed settlement_ts is NaN—check input date format and offset handling. Aborting.");
-      return new Response("Some or all settlement_ts values were NaN. Aborting due to invalid date parse.", {
-        status: 500
-      });
+    if (
+      Number.isNaN(earliest) ||
+      Number.isNaN(latest)
+    ) {
+      this.log("ERROR", "One or more settlement_ts values were NaN. Check input format.");
+      return new Response("Invalid date parse (NaN) encountered.", { status: 500 });
     }
 
     this.log("DEBUG", `Earliest settlement time: ${earliest}, latest: ${latest}`);
@@ -273,12 +270,13 @@ export class AemoData implements DurableObject {
     }
     this.log("DEBUG", `Unique regions: ${Array.from(regionSet).join(", ")}`);
 
+    if (!regionSet.size) {
+      this.log("WARNING", "No region IDs found. Aborting.");
+      return new Response("No region IDs in the data.", { status: 200 });
+    }
+
     this.log("INFO", "Step 4: Checking the database for missing data in the available range...");
     const regionIds = Array.from(regionSet);
-    if (regionIds.length === 0) {
-      this.log("WARNING", "No region IDs found in the AEMO data. Aborting.");
-      return new Response("No region IDs found in the AEMO data.", { status: 200 });
-    }
     const placeholders = regionIds.map(() => '?').join(', ');
     const selectSql = `
       SELECT settlement_ts, regionid
@@ -286,57 +284,70 @@ export class AemoData implements DurableObject {
       WHERE settlement_ts >= ? AND settlement_ts <= ?
       AND regionid IN (${placeholders})
     `;
-    const existingCursor = this.sql.exec<IntervalRecord>(selectSql, earliest, latest, ...regionIds);
+    const existingCursor = this.sql.exec<IntervalRecord>(
+      selectSql,
+      earliest,
+      latest,
+      ...regionIds
+    );
+
     let existingCount = 0;
-    if (existingCursor.results && existingCursor.results[0] && existingCursor.results[0].rows) {
+    if (
+      existingCursor.results &&
+      existingCursor.results[0] &&
+      existingCursor.results[0].rows
+    ) {
       existingCount = existingCursor.results[0].rows.length;
     }
-    this.log("DEBUG", `Found ${existingCount} existing records in this range for these regions.`);
+    this.log(
+      "DEBUG",
+      `Found ${existingCount} existing records in this range for these regions.`
+    );
 
     this.log("INFO", "Step 5: Inserting or updating records (upsert) in the database...");
     let upsertCount = 0;
     for (const interval of intervals) {
-      // If settlement_ts is invalid, we skip the row.
+      // If settlement_ts is invalid, skip
       if (Number.isNaN(interval.settlement_ts)) {
         this.log(
           "ERROR",
-          `Skipping record due to NaN settlement: date="${interval.settlementdate}", regionid=${interval.regionid}`
+          `Skipping record with NaN settlement_ts. Original date: ${interval.settlementdate}, region: ${interval.regionid}`
         );
         continue;
       }
 
       this.log(
-        "DEBUG", 
+        "DEBUG",
         `Upserting interval: settlement_ts=${interval.settlement_ts}, regionid=${interval.regionid}`
       );
       const cursor = this.sql.exec<IntervalRecord>(
         `
-        INSERT INTO aemo_five_min_data (
-          settlement_ts,
-          regionid,
-          region,
-          rrp,
-          totaldemand,
-          periodtype,
-          netinterchange,
-          scheduledgeneration,
-          semischeduledgeneration,
-          apcflag
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (settlement_ts, regionid)
-        DO UPDATE SET
-          region=excluded.region,
-          rrp=excluded.rrp,
-          totaldemand=excluded.totaldemand,
-          periodtype=excluded.periodtype,
-          netinterchange=excluded.netinterchange,
-          scheduledgeneration=excluded.scheduledgeneration,
-          semischeduledgeneration=excluded.semischeduledgeneration,
-          apcflag=excluded.apcflag
+          INSERT INTO aemo_five_min_data (
+            settlement_ts,
+            regionid,
+            region,
+            rrp,
+            totaldemand,
+            periodtype,
+            netinterchange,
+            scheduledgeneration,
+            semischeduledgeneration,
+            apcflag
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (settlement_ts, regionid)
+          DO UPDATE SET
+            region=excluded.region,
+            rrp=excluded.rrp,
+            totaldemand=excluded.totaldemand,
+            periodtype=excluded.periodtype,
+            netinterchange=excluded.netinterchange,
+            scheduledgeneration=excluded.scheduledgeneration,
+            semischeduledgeneration=excluded.semischeduledgeneration,
+            apcflag=excluded.apcflag
         `,
         interval.settlement_ts,
         interval.regionid,
-        interval.regionid, // Region placeholder if no distinct region name is available
+        interval.regionid, // region placeholder if no distinct region name
         interval.rrp,
         interval.totaldemand,
         interval.periodtype,
@@ -365,35 +376,51 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Parses a date string from AEMO into a Unix epoch (seconds).  
+   * Manually parses an AEMO-provided date "YYYY-MM-DDTHH:mm:ss" as if it is in
+   * Australian Eastern Time (UTC+10), then converts to a UTC epoch (in seconds).
    *
-   * This tries Date.parse() on the raw string first. If no time zone is present,
-   * we append "+10:00" to interpret it as AEST, which may need to be adjusted
-   * seasonally for real usage if the data includes daylight saving transitions.  
-   * 
-   * If parsing still fails, returns NaN and logs an error.  
+   * NOTE: This does not handle Daylight Saving Time. If DST is active, adjustments
+   *       will be necessary. Also, if your AEMO times do or will include an actual
+   *       time zone field, you'll need a more robust parsing approach.
    *
-   * @param dateStr AEMO-supplied settlement date string
-   * @return The Unix epoch (seconds), or NaN if parsing fails
+   * @param dateStr The AEMO-supplied local date/time string, e.g. "2025-03-16T18:00:00"
+   * @return The epoch timestamp (UTC seconds) or NaN if parsing fails
    */
-  private parseAemoDate(dateStr: string): number {
-    // Log the input for debugging
-    this.log("DEBUG", `parseAemoDate input: "${dateStr}"`);
-
-    let ms = Date.parse(dateStr);
-
-    // If still NaN, try appending +10:00 if no timezone is present
-    if (Number.isNaN(ms) && !/([Zz]|[\+\-]\d\d:?\d\d)$/.test(dateStr.trim())) {
-      const appended = `${dateStr.trim()} +10:00`;
-      this.log("DEBUG", `parseAemoDate appending +10:00 to form: "${appended}"`);
-      ms = Date.parse(appended);
-    }
-
-    if (Number.isNaN(ms)) {
-      this.log("ERROR", `Could not parse AEMO date: "${dateStr}".`);
+  private parseAemoDateToUtc(dateStr: string): number {
+    // We expect "YYYY-MM-DDTHH:mm:ss"
+    this.log("DEBUG", `Parsing date string: "${dateStr}" as AEST (UTC+10)`);
+    const [datePart, timePart] = dateStr.split("T");
+    if (!datePart || !timePart) {
+      this.log("ERROR", `Malformed date/time: "${dateStr}"`);
       return NaN;
     }
 
+    const [yearStr, monthStr, dayStr] = datePart.split("-");
+    const [hourStr, minuteStr, secondStr = "0"] = timePart.split(":");
+    const year = parseInt(yearStr, 10);
+    const month = parseInt(monthStr, 10);
+    const day = parseInt(dayStr, 10);
+    let hour = parseInt(hourStr, 10);
+    const minute = parseInt(minuteStr, 10);
+    const second = parseInt(secondStr, 10);
+
+    if (
+      Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day) ||
+      Number.isNaN(hour) || Number.isNaN(minute) || Number.isNaN(second)
+    ) {
+      this.log("ERROR", `Invalid numeric date/time components: "${dateStr}"`);
+      return NaN;
+    }
+
+    // Subtract 10 hours to shift from local AEST to UTC.
+    // This is naive and does not handle DST or day wrap-around properly.
+    hour -= 10;
+    const ms = Date.UTC(year, month - 1, day, hour, minute, second);
+
+    if (Number.isNaN(ms)) {
+      this.log("ERROR", `Could not build UTC time from: "${dateStr}"`);
+      return NaN;
+    }
     return Math.floor(ms / 1000);
   }
 
