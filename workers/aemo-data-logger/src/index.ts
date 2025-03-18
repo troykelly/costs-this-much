@@ -1,14 +1,23 @@
 /**
  * @fileoverview Cloudflare Worker entry point for the AEMO Data Logger.
  * Schedules every 5 minutes offset by 1 minute, fetches missing intervals from
- * AEMO, and stores them in a SQL-based Durable Object.
+ * AEMO, and stores them in a SQL-based Durable Object. This is the primary
+ * orchestration script for data ingestion.
  *
- * This is a scaffolding. Please implement actual fetch + insertion logic.
+ * Usage:
+ *  - Invoked automatically via schedule triggers.
+ *  - The scheduled handler calls the associated Durable Object to perform
+ *    the actual data fetch and insert operations.
  */
 
 import { AemoDataDurableObject } from './AemoDataDurableObject';
 
-// For TypeScript, define the Env interface for Wrangler environment bindings:
+/**
+ * Env interface defining the required environment bindings.
+ * @property {DurableObjectNamespace} AemoDataDO The Durable Object namespace for storing AEMO data.
+ * @property {string} AEMO_API_URL The API endpoint for fetching data from AEMO.
+ * @property {string} AEMO_API_HEADERS A JSON-formatted string representing header key-value pairs.
+ */
 interface Env {
   AemoDataDO: DurableObjectNamespace;
   AEMO_API_URL: string;
@@ -16,33 +25,43 @@ interface Env {
 }
 
 export default {
+  /**
+   * Scheduled handler that runs automatically based on the cron settings provided
+   * in wrangler.logger.toml. It retrieves the Durable Object for data storage and
+   * sends a request to trigger the data synchronisation process.
+   * 
+   * @param {ScheduledController} controller The Cloudflare scheduled controller.
+   * @param {Env} env The environment variables and bindings.
+   * @param {ExecutionContext} ctx The execution context for asynchronous tasks.
+   * @returns {Promise<void>} No direct return value; any errors are caught and logged.
+   */
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    // 1. Identify which intervals are missing in the last 36 hours
-    // 2. Fetch from AEMO (36 hours worth) but process only needed intervals
-    // 3. Insert them into SQL DO
-    //
-    // This is just a stub. Extend as necessary.
-
     try {
-      // Identify the DO that stores our data
-      // For a single DO approach, we could use a known "unique" id
+      // Identify the DO instance that stores our data.
       const id = env.AemoDataDO.idFromName("AEMO_LOGGER");
       const obj = env.AemoDataDO.get(id);
 
-      // Tell the DO to 'sync' or 'update' missing intervals
-      // Typically you'd pass messages to the DO with obj.fetch, e.g.:
+      // Trigger the Durable Object to perform the sync process.
       await obj.fetch("https://dummy-url/sync", { method: "POST" });
-
     } catch (err) {
       console.error("AEMO DataLogger scheduled job error: ", err);
     }
   },
 
-  // If you also want to handle fetch events
+  /**
+   * Standard fetch handler. This Worker primarily relies on scheduled events
+   * for operation. The fetch handler can still serve requests for manual testing
+   * or debugging if desired.
+   *
+   * @param {Request} request The incoming request.
+   * @param {Env} env The environment variables and bindings.
+   * @param {ExecutionContext} ctx The execution context for asynchronous tasks.
+   * @returns {Promise<Response>} A basic response indicating the Worker is live.
+   */
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    // optional: implement if you want to manually test or debug
-    return new Response("AEMO DataLogger Worker. Use schedule triggers for normal operation.\n", {
-      headers: { "content-type": "text/plain" },
-    });
-  }
-}
+    return new Response(
+      "AEMO DataLogger Worker. Use schedule triggers for normal operation.\n",
+      { headers: { "content-type": "text/plain" } }
+    );
+  },
+};
