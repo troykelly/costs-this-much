@@ -275,10 +275,11 @@ function getOrCreateSessionId(request: Request): string {
   if (match) {
     return match[1];
   }
-  // We could generate a new ID here, but for strict rate-limiting we just
-  // return "no-session" if none is found. A real app might set a Set-Cookie.
-  // For completeness:
-  //   const randomId = crypto.randomUUID();
-  //   ...
   return "no-session";
 }
+
+// ------------------
+// Export DO classes so Wrangler sees them in this entry file
+// ------------------
+export { AemoData } from "../AemoDataDurableObject";
+export { ApiAbuse } from "./ApiAbuseDurableObject";
