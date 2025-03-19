@@ -31,7 +31,7 @@ export async function createSigner(
  * createVerifier: parse the JWT, use the matching public key
  * from the environment, verify signature, check exp, etc.
  *
- * If invalid, returns null or throws. If valid, returns the decoded payload object.
+ * If invalid, returns null. If valid, returns the decoded payload object.
  */
 export async function createVerifier(
   token: string,
@@ -53,8 +53,8 @@ export async function createVerifier(
   }
 
   const now = Date.now();
+  // Find a key matching that kid, with current validity
   const candidate = keys.find((k) => {
-    // Interpret start and expire as Unix seconds
     const startTime = (k.start ?? 0) * 1000;
     const expireTime = (k.expire ?? 0) * 1000;
     return (
@@ -69,6 +69,7 @@ export async function createVerifier(
   }
 
   try {
+    // This checks signature and expiry automatically
     const verified = jwt.verify(token, candidate.public, {
       algorithms: ["RS256"],
     }) as Record<string, unknown>;

@@ -10,6 +10,48 @@
 import { createSigner, createVerifier } from "./jwtSupport";
 import { Env, KeyDefinition } from "./types";
 
+/**
+ * Parses an RSA public key PEM (spki) to a JWK { n, e } using WebCrypto.
+ * This removes the PEM headers/footers, Base64-decodes the result, and calls importKey/exportKey.
+ *
+ * Requires the Cloudflare Workers runtime or Node.js with the SubtleCrypto APIs.
+ */
+async function parsePublicKeyToJwk(pem: string): Promise<{ n: string; e: string }> {
+  const pemHeader = "-----BEGIN PUBLIC KEY-----";
+  const pemFooter = "-----END PUBLIC KEY-----";
+  let contents = pem.trim();
+
+  // Strip header/footer if present
+  if (contents.startsWith(pemHeader)) {
+    contents = contents.slice(pemHeader.length);
+  }
+  if (contents.endsWith(pemFooter)) {
+    contents = contents.slice(0, -pemFooter.length);
+  }
+
+  // Remove whitespace/newlines
+  contents = contents.replace(/[\r\n\s]/g, "");
+
+  // Decode from Base64 into binary
+  const rawBinary = Uint8Array.from(atob(contents), (c) => c.charCodeAt(0));
+
+  // Import as spki
+  const key = await crypto.subtle.importKey(
+    "spki",
+    rawBinary.buffer,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    true,
+    ["verify"]
+  );
+
+  // Export to JWK
+  const jwk = (await crypto.subtle.exportKey("jwk", key)) as JsonWebKey;
+  if (!jwk.n || !jwk.e) {
+    throw new Error("Failed to parse RSA public key (missing n or e)");
+  }
+  return { n: jwk.n, e: jwk.e };
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     // First, enforce rate limit
@@ -34,13 +76,15 @@ export default {
 
   /**
    * Return public JWKS info from SIGNING_KEYS. This helps clients verify tokens.
+   * Now fully parses each RSA public PEM to retrieve the actual n/e parameters.
    */
-  handleJwks(env: Env): Response {
+  async handleJwks(env: Env): Promise<Response> {
     try {
       const keys: KeyDefinition[] = JSON.parse(env.SIGNING_KEYS || "[]");
       const now = Date.now();
-      const activePublicKeys = [];
+      const activeJwks = [];
 
+      // Build a list of parsed JWK tasks, one per active key
       for (const k of keys) {
         if (k.revoked) {
           continue;
@@ -49,20 +93,26 @@ export default {
         const startTime = (k.start ?? 0) * 1000;
         const endTime = (k.expire ?? 0) * 1000;
         if (startTime <= now && now < endTime) {
-          // Use k.id as the kid
-          activePublicKeys.push({
-            kty: "RSA",
-            alg: "RS256",
-            use: "sig",
-            kid: k.id,
-            // These are placeholders for the real RSA key components
-            n: "PUBLIC_KEY_N_VALUE",
-            e: "AQAB",
-          });
+          // We'll parse it below
+          activeJwks.push(k);
         }
       }
 
-      return new Response(JSON.stringify({ keys: activePublicKeys }, null, 2), {
+      // Convert each active key's 'public' to a JWK { n, e }
+      const jwkPromises = activeJwks.map(async (keyDef) => {
+        const { n, e } = await parsePublicKeyToJwk(keyDef.public);
+        return {
+          kty: "RSA",
+          alg: "RS256",
+          use: "sig",
+          kid: keyDef.id,
+          n,
+          e,
+        };
+      });
+
+      const finalJwks = await Promise.all(jwkPromises);
+      return new Response(JSON.stringify({ keys: finalJwks }, null, 2), {
         headers: { "content-type": "application/json" },
       });
     } catch (err) {
@@ -90,14 +140,21 @@ export default {
       const shortLivedToken = await createSigner(signingKey, kid, clientId, 15 * 60);
       const refreshToken = await createSigner(signingKey, kid, clientId, 14 * 24 * 3600, true);
 
-      return new Response(JSON.stringify({
-        token_type: "Bearer",
-        access_token: shortLivedToken,
-        expires_in: 15 * 60,
-        refresh_token: refreshToken
-      }), {
-        headers: { "content-type": "application/json" }
-      });
+      return new Response(
+        JSON.stringify(
+          {
+            token_type: "Bearer",
+            access_token: shortLivedToken,
+            expires_in: 15 * 60,
+            refresh_token: refreshToken,
+          },
+          null,
+          2
+        ),
+        {
+          headers: { "content-type": "application/json" },
+        }
+      );
     } catch (err) {
       return new Response("Error: " + (err as Error).message, { status: 500 });
     }
@@ -130,13 +187,20 @@ export default {
       }
 
       const shortLivedToken = await createSigner(signingKey, kid, clientId as string, 15 * 60);
-      return new Response(JSON.stringify({
-        token_type: "Bearer",
-        access_token: shortLivedToken,
-        expires_in: 15 * 60,
-      }), {
-        headers: { "content-type": "application/json" }
-      });
+      return new Response(
+        JSON.stringify(
+          {
+            token_type: "Bearer",
+            access_token: shortLivedToken,
+            expires_in: 15 * 60,
+          },
+          null,
+          2
+        ),
+        {
+          headers: { "content-type": "application/json" },
+        }
+      );
     } catch (err) {
       return new Response("Error: " + (err as Error).message, { status: 500 });
     }
@@ -185,7 +249,11 @@ export default {
 /**
  * Verifies that the given token is valid. If not, returns null.
  */
-async function verifyToken(token: string, env: Env, isRefresh: boolean): Promise<Record<string, unknown> | null> {
+async function verifyToken(
+  token: string,
+  env: Env,
+  isRefresh: boolean
+): Promise<Record<string, unknown> | null> {
   return await createVerifier(token, env, isRefresh);
 }
 
@@ -213,7 +281,9 @@ function isValidClientId(clientId: string | undefined, env: Env): boolean {
  * Finds a key in env.SIGNING_KEYS that is active (using start/expire as epoch),
  * and returns the latest one (the one with the newest start).
  */
-function findCurrentSigningKey(env: Env): { signingKey?: string; kid?: string } {
+function findCurrentSigningKey(
+  env: Env
+): { signingKey?: string; kid?: string } {
   let keys: KeyDefinition[] = [];
   try {
     keys = JSON.parse(env.SIGNING_KEYS || "[]");
@@ -246,7 +316,10 @@ function findCurrentSigningKey(env: Env): { signingKey?: string; kid?: string } 
  * Calls the API_ABUSE DO to see if this request is within the allowed rate limit.
  * Returns { allowed: false } if the limit is exceeded, or { allowed: true } if ok.
  */
-async function checkRateLimit(request: Request, env: Env): Promise<{ allowed: boolean }> {
+async function checkRateLimit(
+  request: Request,
+  env: Env
+): Promise<{ allowed: boolean }> {
   const nowMs = Date.now();
   const ip = request.headers.get("CF-Connecting-IP") || "UNKNOWN";
   const asn = request.headers.get("CF-ISP") || request.headers.get("cf-asn") || "UNKNOWN";
@@ -275,7 +348,7 @@ async function checkRateLimit(request: Request, env: Env): Promise<{ allowed: bo
 
 /**
  * Simple utility to identify the user's session. This might be replaced with
- * a real session store. For now, we read "sessionId" from cookies or create a random one.
+ * a real session store. For now, we read "sessionId" from cookies or return "no-session".
  */
 function getOrCreateSessionId(request: Request): string {
   const cookie = request.headers.get("cookie") || "";
