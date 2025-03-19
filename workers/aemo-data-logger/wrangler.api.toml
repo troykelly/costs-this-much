@@ -1,7 +1,8 @@
 name = "aemo-api-worker"
 compatibility_date = "2025-03-18"
+upload_source_maps = true
+
 main = "src/api/index.ts"
-account_id = "YOUR_ACCOUNT_ID"
 workers_dev = true
 
 # Wrangler version 3 (v3) format for Durable Objects:
@@ -18,16 +19,4 @@ tag = "v1"
 new_sqlite_classes = ["AemoData"]
 
 [vars]
-CLIENT_IDS = "[\"insert-some-uuid-here\", \"another-uuid-here\"]"
-
-SIGNING_KEYS = """
-[
-  {
-    \"private\":\"-----BEGIN PRIVATE KEY-----\\nABC123...\\n-----END PRIVATE KEY-----\",
-    \"public\":\"-----BEGIN PUBLIC KEY-----\\nXYZ456...\\n-----END PUBLIC KEY-----\",
-    \"start\":\"2025-01-01T00:00:00Z\",
-    \"end\":\"2026-01-01T00:00:00Z\",
-    \"revoked\":false
-  }
-]
-"""
+LOG_LEVEL = 'DEBUG'

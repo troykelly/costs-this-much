@@ -1,8 +1,8 @@
 name = "aemo-data-logger"
 compatibility_date = "2025-03-18"
+upload_source_maps = true
 
 main = "src/index.ts"
-account_id = "YOUR_ACCOUNT_ID"
 workers_dev = true
 
 # This example uses a cron trigger to run every 5 minutes offset by 1 minute
@@ -21,7 +21,6 @@ triggers = { crons = ["1,6,11,16,21,26,31,36,41,46,51,56 * * * *"] }
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["AemoData"]
-
 
 [vars]
 AEMO_API_URL = "https://visualisations.aemo.com.au/aemo/apps/api/report/5MIN"

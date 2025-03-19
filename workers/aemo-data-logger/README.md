@@ -108,7 +108,11 @@ Both modes rely on environment variables set in their respective “wrangler.*.t
 • **CLIENT_IDS** (API)  
   - JSON array or string specifying valid client IDs for token requests.  
 • **SIGNING_KEYS** (API)  
-  - JSON array describing public/private RSA (or other supported) keys for token signing and verification.  
+  - JSON array describing public/private RSA (or other supported) keys for token signing and verification.
+  - Generate these with:
+  ```zsh
+  START_EPOCH=$(date +%s) && EXPIRY_EPOCH=$(($(date +%s) + 31536000)) && KEY_ID=$(echo -n "$START_EPOCH" | sha256sum | cut -c1-16) && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out private.pem && openssl rsa -in private.pem -pubout -out public.pem && echo "JWT_KEYS='[{\"id\":\"$KEY_ID\",\"start\":$START_EPOCH,\"expire\":$EXPIRY_EPOCH,\"private\":\"$(base64 -w 0 < private.pem)\",\"public\":\"$(base64 -w 0 < public.pem)\"}]'" && rm -f private.pem public.pem
+  ```
 
 --------------------------------------------------------------------------------
 
