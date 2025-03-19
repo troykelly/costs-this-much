@@ -1,6 +1,7 @@
 name = "aemo-api-worker"
 compatibility_date = "2025-03-18"
 upload_source_maps = true
+compatibility_flags = ["nodejs_compat"]
 
 main = "src/api/index.ts"
 workers_dev = true
