@@ -2,36 +2,21 @@
  * @fileoverview Durable Object that stores AEMO intervals in a Cloudflare SQL-based backend.
  *
  * IMPORTANT: AEMO data is fixed to Australia/Brisbane time (UTC+10), and the database is
- * storing epoch timestamps. Previously, this code used seconds-based epoch values, which may
- * not match pre-existing data if it was stored in milliseconds. If your existing database
- * entries were stored with millisecond precision, those records will never match the
- * seconds-based lookup range, leading to the appearance of "Found 0 existing records."
+ * storing epoch timestamps. This version stores timestamps in milliseconds (ms).
  *
- * In this version, we now store timestamps in milliseconds (ms) rather than seconds, ensuring
- * the queries match if the database also stores ms-based epochs. If your DB was originally
- * storing second-based epochs, you should convert them or revert to storing in seconds. The
- * key point is that both the code and DB must consistently use the same units.
- *
- * Additionally, we force an Australia/Brisbane offset (+10:00) for timestamps that lack a
- * timezone, preventing re-insertion of the same data due to inconsistent parse results.
- *
- * --------------------------------------------------------------------------
- * This Durable Object implements the requested steps:
- *  1. Attempt to download the AEMO data - logging failure and giving up if unavailable.
- *  2. Check the AEMO data for the oldest and most recent values (for all regions); if no data, log the failure and give up.
- *  3. Generate a list of unique regions included in the AEMO data.
- *  4. Output the date range and list of regions to the debug log.
- *  5. Check the database for missing data in the available AEMO data range for the available regions.
- *  6. Output the list of missing intervals in the database to the debug log.
- *  7. Insert any missing records in the database.
- * --------------------------------------------------------------------------
+ * This version includes an additional endpoint for data retrieval:
+ *   GET /range?start=...&end=...&lastSec=...&regionid=... (all optional)
+ *     - If lastSec is provided, returns data from (now - lastSec*1000) to now.
+ *     - Otherwise, if start and end are provided, returns data in that range.
+ *     - If regionid is provided, filters records by regionid.
+ *     - If no parameters are provided, defaults to a recent window (last 300 seconds).
  */
 
 import type {
   DurableObjectState,
   DurableObject,
   SqlStorage,
-  SqlStorageValue
+  SqlStorageValue,
 } from "@cloudflare/workers-types";
 
 /** Possible log levels in ascending severity order. */
@@ -109,26 +94,18 @@ export interface AemoApiResponse {
   }[];
 }
 
-/**
- * Durable Object that fetches AEMO data and stores intervals in a SQLite table named "aemo_five_min_data".
- * Forces a UTC+10 offset for Australia/Brisbane if none is provided.
- */
 export class AemoData implements DurableObject {
   private readonly sql: SqlStorage;
   private readonly logLevel: number;
   private readonly env: AemoDataEnv;
 
-  /**
-   * Constructs the DO, assigning Cloudflare’s SQL storage to "this.sql" and
-   * conditionally creating the "aemo_five_min_data" table if it doesn't exist.
-   */
   constructor(private readonly state: DurableObjectState, env: AemoDataEnv) {
     this.sql = state.storage.sql;
     this.env = env;
     const configuredLevel = env.LOG_LEVEL ?? "WARN";
     this.logLevel = getLogPriority(configuredLevel);
 
-    // Attempt a small query to check table existence; if it fails, create the table and indexes.
+    // Check table existence; create if needed
     try {
       this.sql.exec("SELECT 1 FROM aemo_five_min_data LIMIT 1;");
       this.log("DEBUG", "Table aemo_five_min_data exists. Skipping creation.");
@@ -159,25 +136,25 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Main fetch handler. For this DO, we specifically handle POST /sync to run the data ingestion.
+   * Dispatch fetch requests for:
+   * - POST /sync: used by the scheduled data logger to ingest intervals.
+   * - GET /range: retrieve intervals with optional filters.
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
     if (request.method === "POST" && url.pathname === "/sync") {
       return this.handleSync();
+    } else if (request.method === "GET" && url.pathname === "/range") {
+      return this.handleRangeRequest(url);
     }
+
     return new Response("Not Found", { status: 404 });
   }
 
   /**
-   * The orchestrated data ingestion:
-   *  1) Attempt to download data from AEMO (log error & give up on failure).
-   *  2) Identify oldest & newest intervals across all regions; if none, log & return.
-   *  3) Identify unique regions in the data.
-   *  4) Output date range & region list to debug logs.
-   *  5) Check DB for which intervals exist in that range for those regions.
-   *  6) Output missing intervals to debug logs.
-   *  7) Insert missing records.
+   * The orchestrated data ingestion used by the logger worker:
+   * fetch from AEMO and store missing intervals.
    */
   private async handleSync(): Promise<Response> {
     this.log("INFO", "Step 1: Attempting to download AEMO data...");
@@ -212,7 +189,7 @@ export class AemoData implements DurableObject {
     this.log("INFO", "Step 2: Checking the AEMO data for earliest and latest intervals...");
     let data: AemoApiResponse;
     try {
-      data = await resp.json() as AemoApiResponse;
+      data = (await resp.json()) as AemoApiResponse;
     } catch (err) {
       const msg = `Invalid JSON in AEMO response: ${(err as Error).message}`;
       this.log("ERROR", msg);
@@ -236,7 +213,6 @@ export class AemoData implements DurableObject {
       return new Response(msg, { status: 200 });
     }
 
-    // Identify earliest & latest
     let earliest = intervals[0].settlement_ts;
     let latest = intervals[0].settlement_ts;
     for (const iv of intervals) {
@@ -250,10 +226,7 @@ export class AemoData implements DurableObject {
       return new Response(msg, { status: 500 });
     }
 
-    // 3) Unique regions
     const regionIds = [...new Set(intervals.map((i) => i.regionid))];
-
-    // 4) Output date range & region list
     this.log(
       "DEBUG",
       `Earliest (ms): ${earliest}, latest (ms): ${latest}, Regions: ${JSON.stringify(regionIds)}`
@@ -266,8 +239,6 @@ export class AemoData implements DurableObject {
     }
 
     this.log("INFO", "Step 5: Checking the DB for existing records...");
-
-    // 4) Run the actual query to find existing records in the chosen range.
     const placeholders: string = regionIds.map(() => "?").join(", ");
     const selectSql = `
       SELECT settlement_ts, regionid
@@ -275,7 +246,6 @@ export class AemoData implements DurableObject {
       WHERE settlement_ts >= ? AND settlement_ts <= ?
         AND regionid IN (${placeholders})
     `;
-
     const existingCursor = this.sql.exec<IntervalRecord>(
       selectSql,
       earliest,
@@ -283,28 +253,18 @@ export class AemoData implements DurableObject {
       ...regionIds
     );
 
-    // Collect matching rows and build a Set of keys in one pass.
-    const existingRows: IntervalRecord[] = [];
     const existingKeys: Set<string> = new Set();
-
     for (const row of existingCursor) {
-      existingRows.push(row);
       existingKeys.add(`${row.settlement_ts}-${row.regionid}`);
     }
 
     this.log(
       "DEBUG",
-      `Found ${existingRows.length} existing records in the chosen ms-range & region set.`
-    );
-    this.log(
-      "DEBUG",
       `Found ${existingKeys.size} unique records in the chosen ms-range & region set.`
     );
 
-    // 5) Determine which intervals are missing from the DB.
     this.log("INFO", "Step 6: Figure out missing intervals...");
     const missingIntervals: AemoInterval[] = [];
-
     for (const iv of intervals) {
       const key: string = `${iv.settlement_ts}-${iv.regionid}`;
       if (!existingKeys.has(key)) {
@@ -357,9 +317,83 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Convert a raw record from AEMO to an AemoInterval, forcing UTC+10 if no timezone is specified,
-   * and storing the resulting time in milliseconds.
+   * Handle GET /range for data retrieval. Query parameters:
+   *   lastSec: number (if provided, we override start/end with now-lastSec..now)
+   *   start: ms
+   *   end: ms
+   *   regionid: string
+   * If none are provided, default to the last 300 seconds.
    */
+  private async handleRangeRequest(url: URL): Promise<Response> {
+    const nowMs = Date.now();
+    let startParam = url.searchParams.get("start");
+    let endParam = url.searchParams.get("end");
+    const lastSecParam = url.searchParams.get("lastSec");
+    const regionParam = url.searchParams.get("regionid");
+
+    let startMs: number;
+    let endMs: number;
+
+    if (lastSecParam) {
+      const sec = parseInt(lastSecParam, 10);
+      if (Number.isNaN(sec) || sec <= 0) {
+        // fallback to default
+        startMs = nowMs - 300000;
+        endMs = nowMs;
+      } else {
+        startMs = nowMs - sec * 1000;
+        endMs = nowMs;
+      }
+    } else if (startParam && endParam) {
+      const startNum = parseInt(startParam, 10);
+      const endNum = parseInt(endParam, 10);
+      if (Number.isNaN(startNum) || Number.isNaN(endNum) || startNum > endNum) {
+        // fallback
+        startMs = nowMs - 300000;
+        endMs = nowMs;
+      } else {
+        startMs = startNum;
+        endMs = endNum;
+      }
+    } else {
+      // Default last 300 seconds
+      startMs = nowMs - 300000;
+      endMs = nowMs;
+    }
+
+    const regionClause = regionParam ? " AND regionid = ?" : "";
+    const values: (string | number)[] = [startMs, endMs];
+    if (regionParam) {
+      values.push(regionParam);
+    }
+
+    try {
+      const query = `
+        SELECT settlement_ts, regionid, region, rrp, totaldemand, periodtype,
+               netinterchange, scheduledgeneration, semischeduledgeneration, apcflag
+        FROM aemo_five_min_data
+        WHERE settlement_ts >= ? AND settlement_ts <= ?
+              ${regionClause}
+        ORDER BY settlement_ts ASC
+        LIMIT 20000
+      `;
+      const rows = this.sql.exec<IntervalRecord>(query, ...values);
+
+      // Return as JSON
+      return new Response(JSON.stringify(rows), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    } catch (err) {
+      this.log("ERROR", `handleRangeRequest error: ${String(err)}`);
+      return new Response(JSON.stringify({ error: String(err) }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
+
+  /** Convert a raw record from AEMO to an AemoInterval. */
   private recordToInterval(item: AemoApiResponse["5MIN"][number]): AemoInterval | null {
     const tsMs = this.parseLocalBrisbaneMs(item.SETTLEMENTDATE);
     if (Number.isNaN(tsMs)) {
@@ -372,13 +406,9 @@ export class AemoData implements DurableObject {
       settlement_ts: tsMs,
       regionid: item.REGIONID,
       rrp: parseFloat(String(item.RRP)),
-      totaldemand: item.TOTALDEMAND !== undefined
-        ? parseFloat(String(item.TOTALDEMAND))
-        : null,
+      totaldemand: item.TOTALDEMAND !== undefined ? parseFloat(String(item.TOTALDEMAND)) : null,
       periodtype: item.PERIODTYPE !== undefined ? String(item.PERIODTYPE) : null,
-      netinterchange: item.NETINTERCHANGE !== undefined
-        ? parseFloat(String(item.NETINTERCHANGE))
-        : null,
+      netinterchange: item.NETINTERCHANGE !== undefined ? parseFloat(String(item.NETINTERCHANGE)) : null,
       scheduledgeneration: item.SCHEDULEDGENERATION !== undefined
         ? parseFloat(String(item.SCHEDULEDGENERATION))
         : null,
@@ -395,32 +425,8 @@ export class AemoData implements DurableObject {
         }
         return null;
       })(),
-      apcflag: item.APCFLAG !== undefined
-        ? parseFloat(String(item.APCFLAG))
-        : null
+      apcflag: item.APCFLAG !== undefined ? parseFloat(String(item.APCFLAG)) : null,
     };
-  }
-
-  /**
-   * Parses the input as if it is in Australia/Brisbane time (UTC+10).
-   * If no timezone offset is present, append "+10:00", then parse.
-   * Returns the result in milliseconds.
-   */
-  private parseLocalBrisbaneMs(dateStr: string): number {
-    const hasOffsetRegex = /[Zz]|[\+\-]\d{2}:?\d{2}(\s*\(.*\))?$/;
-    let adjusted = dateStr.trim();
-
-    // If the date string doesn't already specify an offset or 'Z', we force +10:00
-    if (!hasOffsetRegex.test(adjusted)) {
-      adjusted += "+10:00";
-    }
-
-    const ms = Date.parse(adjusted);
-    if (Number.isNaN(ms)) {
-      this.log("ERROR", `Failed to parse date string with +10 offset: "${adjusted}"`);
-      return NaN;
-    }
-    return ms;
   }
 
   /**
@@ -435,8 +441,24 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Logging helper that obeys the configured log level threshold.
+   * Append +10:00 if no timezone is specified, parse, return ms.
    */
+  private parseLocalBrisbaneMs(dateStr: string): number {
+    const hasOffsetRegex = /[Zz]|[\+\-]\d{2}:?\d{2}(\s*\(.*\))?$/;
+    let adjusted = dateStr.trim();
+
+    if (!hasOffsetRegex.test(adjusted)) {
+      adjusted += "+10:00";
+    }
+
+    const ms = Date.parse(adjusted);
+    if (Number.isNaN(ms)) {
+      this.log("ERROR", `Failed to parse date string with +10 offset: "${adjusted}"`);
+      return NaN;
+    }
+    return ms;
+  }
+
   private log(level: LogLevel, message: string): void {
     if (getLogPriority(level) >= this.logLevel) {
       console.log(`[${level}] ${message}`);

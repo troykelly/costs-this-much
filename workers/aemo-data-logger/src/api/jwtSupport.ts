@@ -1,48 +1,94 @@
-// This file is placeholder scaffolding for real JWT creation/verification.
-// In real usage, you'd parse the Private Key, sign the JWT with RS256, etc.
-
-import { Env, KeyDefinition } from './types';
+/**
+ * @fileoverview JWT creation and verification using the 'jsonwebtoken' library.
+ * Must be installed as a dependency. Uses RS256 with provided RSA key pairs.
+ */
+import jwt from "jsonwebtoken";
+import { Env, KeyDefinition } from "./types";
 
 /**
- * createSigner signs a token with the given key for the given clientId,
- * attaching e.g. "exp" for expiry. This is just a stub.
+ * createSigner signs a token with the given key for the given client ID,
+ * attaching e.g. "exp" for expiry, "kid" for key ID, etc.
  */
 export async function createSigner(
   privateKeyPem: string,
   kid: string,
   clientId: string,
   expiresInSeconds: number,
-  isRefresh?: boolean
+  isRefresh = false
 ): Promise<string> {
-  // place real sign logic with "jsonwebtoken" or "crypto" libraries
-  // here's a fake placeholder:
-  return `FAKE.${btoa(JSON.stringify({
-    kid, 
-    exp: Math.floor(Date.now()/1000 + expiresInSeconds), 
-    isRefresh: !!isRefresh, 
-    client_id: clientId
-  }))}.SIGN`;
+  const payload = {
+    client_id: clientId,
+    isRefresh,
+  };
+  return jwt.sign(payload, privateKeyPem, {
+    algorithm: "RS256",
+    keyid: kid,
+    expiresIn: expiresInSeconds,
+  });
 }
 
 /**
- * createVerifier simulates verifying the token. Real logic would parse the kid,
- * lookup the key, verify signature, check exp, etc.
+ * createVerifier: parse the JWT, use the matching public key
+ * from the environment, verify signature, check exp, etc.
+ *
+ * If invalid, returns null or throws. If valid, returns the decoded payload object.
  */
 export async function createVerifier(
   token: string,
   env: Env,
   isRefresh: boolean
 ): Promise<Record<string, unknown> | null> {
-  // placeholder parse
-  const parts = token.split('.');
+  // Decode header to find 'kid'
+  const decodedHeader = decodeJwtHeader(token);
+  if (!decodedHeader || !decodedHeader.kid) {
+    return null;
+  }
+
+  const kidFromToken = decodedHeader.kid;
+  // find key by kid
+  let keys: KeyDefinition[] = [];
+  try {
+    keys = JSON.parse(env.SIGNING_KEYS || "[]");
+  } catch {
+    return null;
+  }
+
+  const now = Date.now();
+  const candidate = keys.find((k) => {
+    return (
+      k.start === kidFromToken &&
+      !k.revoked &&
+      new Date(k.start).getTime() <= now &&
+      now < new Date(k.end).getTime()
+    );
+  });
+  if (!candidate) {
+    return null;
+  }
+
+  try {
+    const verified = jwt.verify(token, candidate.public, {
+      algorithms: ["RS256"],
+    }) as Record<string, unknown>;
+
+    if (verified.isRefresh !== isRefresh) {
+      return null;
+    }
+    return verified;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A quick way to decode a JWT header only, without verifying.
+ */
+function decodeJwtHeader(token: string): { kid?: string } | null {
+  const parts = token.split(".");
   if (parts.length !== 3) return null;
   try {
-    const claims = JSON.parse(atob(parts[1]));
-    // check exp
-    if (Date.now()/1000 > claims.exp) return null;
-    if (claims.isRefresh !== isRefresh) return null;
-    // check client_id, kid, etc. if needed
-    return claims;
+    const headerJson = JSON.parse(atob(parts[0]));
+    return headerJson;
   } catch {
     return null;
   }

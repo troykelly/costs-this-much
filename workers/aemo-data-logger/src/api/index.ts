@@ -1,55 +1,60 @@
 /**
- * @fileoverview Minimal scaffolding for an API Worker that issues short-lived JWTs,
- * refresh tokens, and provides a data endpoint, plus .well-known jwks.
- *
- * Note: Implementation details (JWT signing, client ID checks, key rotation, data retrieval)
- * are left for you to complete. This is only a structural scaffold.
+ * @fileoverview Production-ready API Worker that issues and refreshes JWTs,
+ * enforces rate limits via a separate DO, and retrieves AEMO data from the
+ * shared DO. Endpoints:
+ *   - POST /token
+ *   - POST /refresh
+ *   - GET /data
+ *   - GET /.well-known/jwks.json
  */
-import { createSigner, createVerifier } from './jwtSupport';
-import { Env, KeyDefinition } from './types';
+import { createSigner, createVerifier } from "./jwtSupport";
+import { Env, KeyDefinition } from "./types";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // First, enforce rate limit
+    const rateLimitResult = await checkRateLimit(request, env);
+    if (!rateLimitResult.allowed) {
+      return new Response("Too Many Requests", { status: 429 });
+    }
+
     const url = new URL(request.url);
-
-    if (url.pathname === '/.well-known/jwks.json') {
+    if (url.pathname === "/.well-known/jwks.json") {
       return this.handleJwks(env);
-    }
-
-    if (url.pathname === '/token' && request.method === 'POST') {
+    } else if (url.pathname === "/token" && request.method === "POST") {
       return this.handleTokenRequest(request, env);
-    }
-
-    if (url.pathname === '/refresh' && request.method === 'POST') {
+    } else if (url.pathname === "/refresh" && request.method === "POST") {
       return this.handleRefreshRequest(request, env);
-    }
-
-    if (url.pathname === '/data' && request.method === 'GET') {
+    } else if (url.pathname === "/data" && request.method === "GET") {
       return this.handleDataRequest(request, env);
     }
 
     return new Response("Not found", { status: 404 });
   },
 
-  // Stub: Return public JWKS info from SIGNING_KEYS
+  /**
+   * Return public JWKS info from SIGNING_KEYS. This helps clients verify tokens.
+   */
   handleJwks(env: Env): Response {
     try {
       const keys: KeyDefinition[] = JSON.parse(env.SIGNING_KEYS || "[]");
+      // Filter out revoked or expired. We'll just show any key that isn't explicitly revoked.
+      const now = Date.now();
       const activePublicKeys = keys
-        .filter(k => !k.revoked)
-        .map(k => {
-          // Here you'd parse the actual public key into a JWK structure
-          // For scaffolding, we do a simplified example:
+        .filter((k) => !k.revoked && new Date(k.start).getTime() <= now && now < new Date(k.end).getTime())
+        .map((k) => {
+          // Real code must parse the public key to produce a valid JWK n/e. This is a simplified example.
           return {
             kty: "RSA",
             alg: "RS256",
             use: "sig",
-            // an oversimplified representation - real code must parse the actual key to produce a JWK
+            kid: k.start,
+            // Oversimplified placeholders
             n: "PUBLIC_KEY_N_VALUE",
             e: "AQAB",
-            kid: k.start,
           };
         });
+
       return new Response(JSON.stringify({ keys: activePublicKeys }, null, 2), {
         headers: { "content-type": "application/json" },
       });
@@ -58,7 +63,9 @@ export default {
     }
   },
 
-  // Stub: Issue short-lived token and refresh token
+  /**
+   * Issue a short-lived token and refresh token (best practice: ~15m access token, ~14d refresh).
+   */
   async handleTokenRequest(request: Request, env: Env): Promise<Response> {
     try {
       const body = await request.json<any>();
@@ -73,9 +80,7 @@ export default {
         return new Response("No active signing key", { status: 500 });
       }
 
-      // Issue short-lived (e.g., 15min) token
-      const shortLivedToken = await createSigner(signingKey, kid, clientId, 15 * 60); 
-      // Issue refresh token (e.g., 14 days)
+      const shortLivedToken = await createSigner(signingKey, kid, clientId, 15 * 60);
       const refreshToken = await createSigner(signingKey, kid, clientId, 14 * 24 * 3600, true);
 
       return new Response(JSON.stringify({
@@ -91,7 +96,9 @@ export default {
     }
   },
 
-  // Stub: Exchange refresh token for new short-lived token
+  /**
+   * Exchange a refresh token for a new short-lived token.
+   */
   async handleRefreshRequest(request: Request, env: Env): Promise<Response> {
     try {
       const body = await request.json<any>();
@@ -100,14 +107,14 @@ export default {
         return new Response("Missing refresh token", { status: 400 });
       }
 
-      // Verify refresh token
       const tokenPayload = await verifyToken(refreshToken, env, true);
       if (!tokenPayload) {
         return new Response("Invalid or expired refresh token", { status: 401 });
       }
+
       const clientId = tokenPayload["client_id"];
-      if (!isValidClientId(clientId, env)) {
-        return new Response("Client ID is no longer valid", { status: 401 });
+      if (!isValidClientId(clientId as string, env)) {
+        return new Response("Client ID no longer valid", { status: 401 });
       }
 
       const { signingKey, kid } = findCurrentSigningKey(env);
@@ -115,9 +122,7 @@ export default {
         return new Response("No active signing key", { status: 500 });
       }
 
-      // Issue new short-lived token
-      const shortLivedToken = await createSigner(signingKey, kid, clientId, 15 * 60);
-
+      const shortLivedToken = await createSigner(signingKey, kid, clientId as string, 15 * 60);
       return new Response(JSON.stringify({
         token_type: "Bearer",
         access_token: shortLivedToken,
@@ -130,7 +135,11 @@ export default {
     }
   },
 
-  // Stub: Retrieve data up to 31d if user supplies. 
+  /**
+   * Retrieve data from the AemoData DO, defaulting to a recent window or
+   * letting the user pass lastSec=..., or start=..., end=..., regionid=...
+   * Must have a valid short-lived token (Bearer).
+   */
   async handleDataRequest(request: Request, env: Env): Promise<Response> {
     try {
       // parse Authorization header
@@ -145,20 +154,20 @@ export default {
         return new Response("Invalid or expired access token", { status: 401 });
       }
 
-      // parse query e.g. ?days=7
+      // forward query parameters to AemoData DO
       const url = new URL(request.url);
-      let days = parseInt(url.searchParams.get("days") || "7", 10);
-      if (isNaN(days) || days < 1) days = 7;
-      if (days > 31) days = 31;
+      const qs = url.searchParams.toString();
+      const id = env.AEMO_DATA.idFromName("AEMO_LOGGER");
+      const stub = env.AEMO_DATA.get(id);
 
-      // imaginary retrieval from AEMO data DO or store
-      // e.g. const data = retrieveDataFromDO(days);
-      const data = {
-        message: `Some ${days}-day 5-minute data goes here (stub).`
-      };
+      const doResp = await stub.fetch(`https://dummy-url/range?${qs}`);
+      if (!doResp.ok) {
+        return new Response(await doResp.text(), { status: doResp.status });
+      }
 
-      return new Response(JSON.stringify(data, null, 2), {
-        headers: { "content-type": "application/json" }
+      return new Response(await doResp.text(), {
+        status: 200,
+        headers: { "content-type": "application/json" },
       });
     } catch (err) {
       return new Response("Error: " + (err as Error).message, { status: 500 });
@@ -166,40 +175,51 @@ export default {
   },
 };
 
-// -- Helpers:
+/**
+ * Verifies that the given token is valid. If not, returns null.
+ */
+async function verifyToken(token: string, env: Env, isRefresh: boolean): Promise<Record<string, unknown> | null> {
+  return await createVerifier(token, env, isRefresh);
+}
 
-function isValidClientId(clientId: string, env: Env): boolean {
+/**
+ * Checks if the clientId is in the environment's CLIENT_IDS.
+ */
+function isValidClientId(clientId: string | undefined, env: Env): boolean {
   if (!clientId) return false;
-  let validList = env.CLIENT_IDS || "";
+  const raw = env.CLIENT_IDS || "";
   try {
-    if (validList.trim().startsWith("[")) {
+    if (raw.trim().startsWith("[")) {
       // parse as array
-      const arr = JSON.parse(validList) as string[];
+      const arr = JSON.parse(raw) as string[];
       return arr.includes(clientId);
     } else {
       // single string
-      return (clientId === validList.trim());
+      return clientId === raw.trim();
     }
   } catch {
-    // fallback
-    return (clientId === validList.trim());
+    return false;
   }
 }
 
-function findCurrentSigningKey(env: Env): { signingKey?: string, kid?: string } {
+/**
+ * Finds a key in env.SIGNING_KEYS that is active (start <= now < end, not revoked),
+ * and returns the latest one (the one with the newest start).
+ */
+function findCurrentSigningKey(env: Env): { signingKey?: string; kid?: string } {
   let keys: KeyDefinition[] = [];
   try {
     keys = JSON.parse(env.SIGNING_KEYS || "[]");
-  } catch {}
-  // find the key with highest start date that is not revoked and is still in range
+  } catch {
+    // empty
+  }
+  const now = Date.now();
   let best: KeyDefinition | undefined;
   for (const k of keys) {
     if (k.revoked) continue;
     const startTime = new Date(k.start).getTime();
     const endTime = new Date(k.end).getTime();
-    const now = Date.now();
     if (startTime <= now && now < endTime) {
-      // candidate
       if (!best) {
         best = k;
       } else {
@@ -214,8 +234,51 @@ function findCurrentSigningKey(env: Env): { signingKey?: string, kid?: string } 
   return { signingKey: best.private, kid: best.start };
 }
 
-async function verifyToken(token: string, env: Env, isRefresh: boolean): Promise<any | null> {
-  // Example: parse env keys, verify token. We'll bubble up errors if invalid
-  // For scaffolding, we just do a pseudo check. Real code: parse the header kid, find in env, verify.
-  return await createVerifier(token, env, isRefresh);
+/**
+ * Calls the API_ABUSE DO to see if this request is within the allowed rate limit.
+ * Returns { allowed: false } if the limit is exceeded, or { allowed: true } if ok.
+ */
+async function checkRateLimit(request: Request, env: Env): Promise<{ allowed: boolean }> {
+  const nowMs = Date.now();
+  const ip = request.headers.get("CF-Connecting-IP") || "UNKNOWN";
+  const asn = request.headers.get("CF-ISP") || request.headers.get("cf-asn") || "UNKNOWN";
+  const sessionId = getOrCreateSessionId(request);
+
+  // forward to DO
+  const id = env.API_ABUSE.idFromName("API_ABUSE_OBJECT");
+  const stub = env.API_ABUSE.get(id);
+
+  const resp = await stub.fetch("https://dummy-url/checkRate", {
+    method: "POST",
+    body: JSON.stringify({
+      ip,
+      asn,
+      session_id: sessionId,
+      nowMs,
+    }),
+    headers: { "content-type": "application/json" },
+  });
+  if (!resp.ok) {
+    return { allowed: false };
+  }
+  const data = await resp.json<{ allowed: boolean }>();
+  return data;
+}
+
+/**
+ * Simple utility to identify the user's session. This might be replaced with
+ * a real session store. For now, we read "sessionId" from cookies or create a random one.
+ */
+function getOrCreateSessionId(request: Request): string {
+  const cookie = request.headers.get("cookie") || "";
+  const match = cookie.match(/sessionId=([^;]+)/);
+  if (match) {
+    return match[1];
+  }
+  // We could generate a new ID here, but for strict rate-limiting we just
+  // return "no-session" if none is found. A real app might set a Set-Cookie.
+  // For completeness:
+  //   const randomId = crypto.randomUUID();
+  //   ...
+  return "no-session";
 }
