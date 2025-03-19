@@ -2,6 +2,7 @@
 .env
 frontend/dist
 .wrangler
+.dev.vars
 
 # TypeScript
 node_modules/
