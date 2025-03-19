@@ -1,16 +1,21 @@
 /**
  * @fileoverview Durable Object that stores AEMO intervals in a Cloudflare SQL-based backend.
  *
- * IMPORTANT: AEMO data is fixed to Australia/Brisbane time (UTC+10), and the database is
- * storing epoch timestamps. This version stores timestamps in milliseconds (ms).
+ * IMPORTANT: AEMO data is typically UTC+10 (Brisbane time) for settlement,
+ * and this DO stores timestamps in milliseconds (ms).
  *
  * This version includes endpoints for data retrieval:
  *   - POST /sync: used by the scheduled data logger to ingest intervals.
- *   - GET /range: retrieve intervals with optional filters and paging.
+ *   - GET /range: retrieve intervals with optional filters (start/end, lastSec, regionid) and paging (limit/offset).
  *
- * Updated to handle a possible undefined “length” property by doing a fallback check, 
- * and to provide even more detailed debug logging so that any discrepancy in 
- * returned data or row count can be traced.
+ * Changes in this version:
+ * 1. More robust debug logging has been added throughout:
+ *    - Queries are logged in detail (SQL + bound values).
+ *    - Number of returned rows is explicitly counted and logged.
+ *    - If zero rows are returned, a debug query is performed to check the min & max timestamps in the table.
+ * 2. Additional checks in no-variable scenarios. If "no parameters" are passed, /data now fetches the latest records
+ *    in descending order. If no records are returned, additional debug logs show the overall data boundaries.
+ * 3. The openapi.yaml is updated to reflect the new endpoint capabilities and clarify paging usage.
  */
 
 import type {
@@ -35,22 +40,22 @@ function getLogPriority(level: string): number {
     case "ERROR":
       return 4;
     default:
-      return 99; // Means 'NONE' or unknown
+      return 99; // 'NONE' or unknown
   }
 }
 
 /** Environment bindings declared in wrangler.*.toml for a SQLite DO. */
 export interface AemoDataEnv {
-  AEMO_API_URL: string; // e.g. "https://visualisations.aemo.com.au/aemo/apps/api/report/5MIN"
-  AEMO_API_HEADERS: string; // JSON string of headers, e.g. '{"Accept":"application/json"}'
-  LOG_LEVEL?: string; // If set to "DEBUG" or "INFO", logs more details about the process
+  AEMO_API_URL: string;       // e.g. "https://visualisations.aemo.com.au/aemo/apps/api/report/5MIN"
+  AEMO_API_HEADERS: string;   // JSON string of headers, e.g. '{"Accept":"application/json"}'
+  LOG_LEVEL?: string;         // If set to "DEBUG" or "INFO", logs more details about the process
 }
 
 /**
  * Row type for each interval in the "aemo_five_min_data" table.
  */
 export interface IntervalRecord extends Record<string, SqlStorageValue> {
-  settlement_ts: number | null;  // Now stored in milliseconds
+  settlement_ts: number | null;  
   regionid: string | null;
   region: string | null;
   rrp: number | null;
@@ -77,7 +82,7 @@ export interface AemoInterval {
 }
 
 /**
- * Shape of the AEMO 5-minute data JSON response.
+ * Shape of the AEMO 5-minute data JSON response. We primarily need the "5MIN" array.
  */
 export interface AemoApiResponse {
   "5MIN": {
@@ -89,7 +94,7 @@ export interface AemoApiResponse {
     NETINTERCHANGE?: string | number;
     SCHEDULEDGENERATION?: string | number;
     SEMISCHEduledGENERATION?: string | number;
-    SEMISCHEduledGENERATION?: string | number;
+    SEMISCHEduledGENERATION?: string | number;          // Potential mismatch in data fields
     SEMISCHEcheduledGENERATION?: string | number;
     SEMISCHECHEDULEDGENERATION?: string | number;
     APCFLAG?: string | number;
@@ -107,7 +112,7 @@ export class AemoData implements DurableObject {
     const configuredLevel = env.LOG_LEVEL ?? "WARN";
     this.logLevel = getLogPriority(configuredLevel);
 
-    // Check table existence; create if needed
+    // Check for table existence; if not present, create.
     try {
       this.log("DEBUG", "Attempting to verify existence of aemo_five_min_data table.");
       this.sql.exec("SELECT 1 FROM aemo_five_min_data LIMIT 1;");
@@ -139,9 +144,9 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Dispatch fetch requests for:
-   * - POST /sync: used by the scheduled data logger to ingest intervals.
-   * - GET /range: retrieve intervals with optional filters and paging.
+   * Main fetch router:
+   * - POST /sync => handleSync (cron-based ingestion)
+   * - GET /range => handleRangeRequest (client data queries)
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -158,17 +163,23 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * The orchestrated data ingestion used by the logger worker:
-   * fetch from AEMO and store missing intervals.
+   * handleSync - invoked by the scheduled data worker (POST /sync)
+   * Steps:
+   *   1. Fetch data from AEMO
+   *   2. Parse intervals (converting local Brisbane time to epoch ms if needed)
+   *   3. Detect earliest & latest timestamps, check DB for existing records
+   *   4. Insert any missing intervals
    */
   private async handleSync(): Promise<Response> {
     this.log("INFO", "handleSync: Step 1: Attempting to download AEMO data...");
 
+    // Prepare request
     const requestBody = { timeScale: ["5MIN"] };
     const headers = this.parseHeaders(this.env.AEMO_API_HEADERS);
     this.log("DEBUG", `handleSync: Request headers: ${JSON.stringify(headers)}`);
     this.log("DEBUG", `handleSync: Request body: ${JSON.stringify(requestBody)}`);
 
+    // Fetch from AEMO
     let resp: Response;
     try {
       resp = await fetch(this.env.AEMO_API_URL, {
@@ -184,6 +195,7 @@ export class AemoData implements DurableObject {
       this.log("ERROR", msg);
       return new Response(msg, { status: 500 });
     }
+
     if (!resp.ok) {
       const errText = await resp.text();
       const msg = `handleSync: AEMO API error ${resp.status}: ${errText}`;
@@ -191,6 +203,7 @@ export class AemoData implements DurableObject {
       return new Response(msg, { status: 500 });
     }
 
+    // Parse data
     this.log("INFO", "handleSync: Step 2: Checking the AEMO data for earliest and latest intervals...");
     let data: AemoApiResponse;
     try {
@@ -207,10 +220,11 @@ export class AemoData implements DurableObject {
       return new Response(msg, { status: 500 });
     }
 
+    // Convert to intervals
     this.log("INFO", "handleSync: Parsing intervals (forcing Brisbane offset if needed)...");
-    const intervals = data["5MIN"]
+    const intervals: AemoInterval[] = data["5MIN"]
       .map((item) => this.recordToInterval(item))
-      .filter((rec) => rec !== null) as AemoInterval[];
+      .filter((iv) => iv !== null) as AemoInterval[];
 
     if (!intervals.length) {
       const msg = "handleSync: No intervals parsed from AEMO data. Giving up.";
@@ -218,6 +232,7 @@ export class AemoData implements DurableObject {
       return new Response(msg, { status: 200 });
     }
 
+    // Determine earliest & latest
     let earliest = intervals[0].settlement_ts;
     let latest = intervals[0].settlement_ts;
     for (const iv of intervals) {
@@ -230,12 +245,14 @@ export class AemoData implements DurableObject {
       this.log("ERROR", msg);
       return new Response(msg, { status: 500 });
     }
-
-    const regionIds = [...new Set(intervals.map((i) => i.regionid))];
     this.log(
       "DEBUG",
-      `handleSync: Earliest (ms): ${earliest}, latest (ms): ${latest}, Regions: ${JSON.stringify(regionIds)}`
+      `handleSync: earliest=${earliest}, latest=${latest}, totalParsedIntervals=${intervals.length}`
     );
+
+    // Identify region IDs
+    const regionIds = [...new Set(intervals.map((i) => i.regionid))];
+    this.log("DEBUG", `handleSync: regionIds=${JSON.stringify(regionIds)}`);
 
     if (!regionIds.length) {
       const msg = "handleSync: No region IDs found in AEMO data. Aborting.";
@@ -243,6 +260,7 @@ export class AemoData implements DurableObject {
       return new Response(msg, { status: 200 });
     }
 
+    // Check for existing records in that date range & region set
     this.log("INFO", "handleSync: Step 5: Checking the DB for existing records...");
     const placeholders: string = regionIds.map(() => "?").join(", ");
     const selectSql = `
@@ -252,7 +270,8 @@ export class AemoData implements DurableObject {
         AND regionid IN (${placeholders})
     `;
     this.log("DEBUG", `handleSync: Checking existing records with query=${selectSql}`);
-    const existingCursor = this.sql.exec<IntervalRecord>(
+
+    const existingRows = this.sql.exec<IntervalRecord>(
       selectSql,
       earliest,
       latest,
@@ -260,30 +279,31 @@ export class AemoData implements DurableObject {
     );
 
     const existingKeys: Set<string> = new Set();
-    for (const row of existingCursor) {
-      const combo = `${row.settlement_ts}-${row.regionid}`;
+    for (const r of existingRows) {
+      const combo = `${r.settlement_ts}-${r.regionid}`;
       existingKeys.add(combo);
     }
-
     this.log(
       "DEBUG",
-      `handleSync: Found ${existingKeys.size} unique records in the chosen ms-range & region set.`
+      `handleSync: foundExisting=${existingKeys.size}, in timeframe [${earliest},${latest}] region set.`
     );
 
+    // Build list of missing intervals
     this.log("INFO", "handleSync: Step 6: Figure out missing intervals...");
     const missingIntervals: AemoInterval[] = [];
     for (const iv of intervals) {
-      const key: string = `${iv.settlement_ts}-${iv.regionid}`;
+      const key = `${iv.settlement_ts}-${iv.regionid}`;
       if (!existingKeys.has(key)) {
         missingIntervals.push(iv);
       }
     }
-    this.log("DEBUG", `handleSync: Missing intervals count=${missingIntervals.length}`);
+    this.log("DEBUG", `handleSync: missingCount=${missingIntervals.length}`);
 
-    this.log("INFO", "handleSync: Step 7: Insert missing records...");
+    // Insert missing intervals
     let insertedCount = 0;
+    this.log("INFO", "handleSync: Step 7: Insert missing records...");
     for (const iv of missingIntervals) {
-      const cursor = this.sql.exec<IntervalRecord>(
+      const cursor = this.sql.exec(
         `
           INSERT INTO aemo_five_min_data (
             settlement_ts,
@@ -296,7 +316,8 @@ export class AemoData implements DurableObject {
             scheduledgeneration,
             semischeduledgeneration,
             apcflag
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (settlement_ts, regionid)
           DO NOTHING
         `,
@@ -314,29 +335,25 @@ export class AemoData implements DurableObject {
       insertedCount += cursor.rowsWritten;
     }
 
-    const msg = `handleSync: Sync complete. Processed ${intervals.length} intervals; inserted ${insertedCount} new records.`;
+    const msg = `handleSync: Sync complete. intervalsParsed=${intervals.length}, insertedNew=${insertedCount}`;
     this.log("INFO", msg);
     return new Response(msg, { status: 200 });
   }
 
   /**
-   * Handle GET /range for data retrieval. Query parameters:
-   *   lastSec: number (if provided, returns data [nowMs - lastSec..nowMs], must be <= 604800)
-   *   start: ms
-   *   end: ms
-   *   regionid: string
-   *   limit: number of records to return (for paging, defaults to 100 if not specified)
-   *   offset: offset to begin records (for paging, defaults to 0 if not specified)
-   *
-   * If lastSec is provided, it overrides start/end. Data is returned in descending order.
-   * If start/end are provided, data is returned in ascending order by timestamp.
-   * If no param is provided, returns the most recent records, in descending order.
+   * handleRangeRequest: GET /range for data retrieval.
+   * Query parameters:
+   *   - lastSec: number => returns data [nowMs - lastSec .. nowMs], descending
+   *   - start,end: ms range => ascending
+   *   - regionid: (optional) filter
+   *   - limit/offset: paging
+   * If no parameters => returns the most recent records in descending order.
    */
   private async handleRangeRequest(url: URL): Promise<Response> {
     this.log("DEBUG", "handleRangeRequest: processing /range endpoint call.");
 
     try {
-      // Parse paging parameters
+      // Extract paging
       const limitParamRaw = url.searchParams.get("limit");
       const offsetParamRaw = url.searchParams.get("offset");
       let limit = parseInt(limitParamRaw ?? "100", 10);
@@ -350,9 +367,12 @@ export class AemoData implements DurableObject {
       const startParam = url.searchParams.get("start");
       const endParam = url.searchParams.get("end");
       const regionParam = url.searchParams.get("regionid");
-      this.log("DEBUG", `handleRangeRequest: lastSec=${lastSecParam}, start=${startParam}, end=${endParam}, regionid=${regionParam}`);
+      this.log(
+        "DEBUG",
+        `handleRangeRequest: lastSec=${lastSecParam}, start=${startParam}, end=${endParam}, regionid=${regionParam}`
+      );
 
-      // If lastSec is provided, ensure no start/end is present, do descending
+      // If lastSec => descending
       if (lastSecParam) {
         if (startParam || endParam) {
           const errorMsg = "Cannot combine lastSec with start or end.";
@@ -363,7 +383,7 @@ export class AemoData implements DurableObject {
           });
         }
         const lastSec = parseInt(lastSecParam, 10);
-        if (isNaN(lastSec) || lastSec <= 0) {
+        if (Number.isNaN(lastSec) || lastSec <= 0) {
           const errorMsg = "Invalid lastSec.";
           this.log("DEBUG", `handleRangeRequest error: ${errorMsg}`);
           return new Response(JSON.stringify({ error: errorMsg }), {
@@ -381,14 +401,11 @@ export class AemoData implements DurableObject {
         }
         const startMs = nowMs - lastSec * 1000;
         const endMs = nowMs;
-        this.log(
-          "DEBUG",
-          `handleRangeRequest: lastSec chosen range startMs=${startMs}, endMs=${endMs}`
-        );
+        this.log("DEBUG", `handleRangeRequest: lastSec => startMs=${startMs}, endMs=${endMs}`);
         return this.queryRange(startMs, endMs, regionParam, false, limit, offset);
       }
 
-      // If start or end is present, both must be
+      // If either start or end => both required => ascending
       if (startParam || endParam) {
         if (!startParam || !endParam) {
           const errorMsg = "Must supply both start and end or neither.";
@@ -400,7 +417,7 @@ export class AemoData implements DurableObject {
         }
         const startMs = parseInt(startParam, 10);
         const endMs = parseInt(endParam, 10);
-        if (isNaN(startMs) || isNaN(endMs)) {
+        if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
           const errorMsg = "Invalid start or end.";
           this.log("DEBUG", `handleRangeRequest error: ${errorMsg}`);
           return new Response(JSON.stringify({ error: errorMsg }), {
@@ -416,7 +433,7 @@ export class AemoData implements DurableObject {
             headers: { "content-type": "application/json" },
           });
         }
-        if ((endMs - startMs) > 604800000) {
+        if (endMs - startMs > 604800000) {
           const errorMsg = "Requested range too large.";
           this.log("DEBUG", `handleRangeRequest error: ${errorMsg}`);
           return new Response(JSON.stringify({ error: errorMsg }), {
@@ -424,19 +441,14 @@ export class AemoData implements DurableObject {
             headers: { "content-type": "application/json" },
           });
         }
-        this.log(
-          "DEBUG",
-          `handleRangeRequest: explicit range startMs=${startMs}, endMs=${endMs}`
-        );
+        this.log("DEBUG", `handleRangeRequest: explicit => startMs=${startMs}, endMs=${endMs}`);
         return this.queryRange(startMs, endMs, regionParam, true, limit, offset);
       }
 
-      // No params => return the most recent records in descending order
-      this.log(
-        "DEBUG",
-        "handleRangeRequest: No range parameters provided, returning latest records."
-      );
+      // No parameters => return the most recent records (descending)
+      this.log("DEBUG", "handleRangeRequest: no parameters => returning latest records desc.");
       return this.queryLatestRecords(regionParam, limit, offset);
+
     } catch (err) {
       this.log("ERROR", `handleRangeRequest error: ${String(err)}`);
       return new Response(JSON.stringify({ error: String(err) }), {
@@ -447,20 +459,11 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Retrieve rows from the database between startMs and endMs, with optional region filter,
-   * and order ascending or descending. Applies limit/offset for paging.
+   * queryRange: retrieve intervals from startMs..endMs. If asc=true => ascending,
+   * else => descending. regionParam filters by region if provided. limit/offset for paging.
    *
-   * If the returned value from this.sql.exec is not an array for any reason,
-   * we do a fallback to avoid "undefined" issues. In normal usage, though,
-   * .exec() should always return an array.
-   *
-   * @param {number} startMs The lower bound of the timestamp range (inclusive).
-   * @param {number} endMs The upper bound of the timestamp range (inclusive).
-   * @param {string|null} regionParam Optional region ID filter.
-   * @param {boolean} asc If true, order by settlement_ts ascending; otherwise descending.
-   * @param {number} limit The maximum rows to return (paging).
-   * @param {number} offset The row offset to begin returning data (paging).
-   * @return {Response} JSON response with the retrieved rows or an error.
+   * - If results are zero, attempt a fallback debug query to show min & max timestamps
+   *   in the entire table, to help diagnose timing issues.
    */
   private queryRange(
     startMs: number,
@@ -488,28 +491,23 @@ export class AemoData implements DurableObject {
       query += ` ORDER BY settlement_ts ${orderBy} LIMIT ? OFFSET ?`;
       values.push(limit, offset);
 
-      this.log(
-        "DEBUG",
-        `queryRange: Final SQL="${query.trim()}" with values=${JSON.stringify(values)}`
-      );
+      this.log("DEBUG", `queryRange: Final SQL="${query.trim()}"`);
+      this.log("DEBUG", `queryRange: Values=${JSON.stringify(values)}`);
 
       const result = this.sql.exec<IntervalRecord>(query, ...values);
-      // Safely derive the row count if possible
       const rowCount = Array.isArray(result) ? result.length : 0;
+      this.log("DEBUG", `queryRange: Retrieved ${rowCount} row(s).`);
 
-      this.log(
-        "DEBUG",
-        `queryRange: Retrieved ${rowCount} record(s) from DB. (Type of result: ${typeof result})`
-      );
-
-      if (rowCount > 0) {
+      if (rowCount === 0) {
+        this.log("DEBUG", "queryRange: No rows returned => performing debug boundary check.");
+        this.debugMinMax();
+      } else {
+        // Sample row
         const sample = result[0];
         this.log(
           "DEBUG",
-          `queryRange: Sample row => settlement_ts=${sample.settlement_ts}, regionid=${sample.regionid}, rrp=${sample.rrp}`
+          `queryRange: sampleRow => settlement_ts=${sample.settlement_ts}, regionid=${sample.regionid}, rrp=${sample.rrp}`
         );
-      } else {
-        this.log("DEBUG", "queryRange: No rows returned by the query.");
       }
 
       return new Response(JSON.stringify(result), {
@@ -526,14 +524,9 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Retrieve the most recent records across all regions (unless filtered by regionParam),
-   * ordered by descending timestamp. Applies the provided limit and offset for paging.
-   * If the return isn't an array, fallback is used to ensure no "undefined" logging occurs.
-   *
-   * @param {string|null} regionParam Optional region ID filter.
-   * @param {number} limit The maximum rows to return (paging).
-   * @param {number} offset The row offset to begin returning data (paging).
-   * @return {Response} JSON response with the retrieved rows or an error.
+   * queryLatestRecords: fetch the latest intervals across all regions
+   * (or filtered by region), descending by settlement_ts.
+   * Also logs debug info about min & max if rowCount=0, for troubleshooting.
    */
   private queryLatestRecords(
     regionParam: string | null,
@@ -556,24 +549,23 @@ export class AemoData implements DurableObject {
       query += ` ORDER BY settlement_ts DESC LIMIT ? OFFSET ?`;
       values.push(limit, offset);
 
-      this.log(
-        "DEBUG",
-        `queryLatestRecords: Final SQL="${query.trim()}" with values=${JSON.stringify(values)}`
-      );
+      this.log("DEBUG", `queryLatestRecords: Final SQL="${query.trim()}"`);
+      this.log("DEBUG", `queryLatestRecords: Values=${JSON.stringify(values)}`);
 
       const result = this.sql.exec<IntervalRecord>(query, ...values);
       const rowCount = Array.isArray(result) ? result.length : 0;
+      this.log("DEBUG", `queryLatestRecords: retrieved ${rowCount} row(s).`);
 
-      this.log(
-        "DEBUG",
-        `queryLatestRecords: Retrieved ${rowCount} record(s) from DB. (Type of result: ${typeof result})`
-      );
-
-      if (rowCount > 0) {
-        const sample = result[0];
-        this.log("DEBUG", `queryLatestRecords: Sample => settlement_ts=${sample.settlement_ts}, regionid=${sample.regionid}, rrp=${sample.rrp}`);
+      if (rowCount === 0) {
+        this.log("DEBUG", "queryLatestRecords: No rows => performing debug boundary check.");
+        this.debugMinMax();
       } else {
-        this.log("DEBUG", "queryLatestRecords: No rows returned by the query.");
+        // Sample row
+        const sample = result[0];
+        this.log(
+          "DEBUG",
+          `queryLatestRecords: sampleRow => settlement_ts=${sample.settlement_ts}, regionid=${sample.regionid}, rrp=${sample.rrp}`
+        );
       }
 
       return new Response(JSON.stringify(result), {
@@ -589,11 +581,17 @@ export class AemoData implements DurableObject {
     }
   }
 
-  /** Convert a raw record from AEMO to an AemoInterval. */
+  /**
+   * recordToInterval: convert an AEMO 5MIN record into a typed AemoInterval object.
+   * If date parse fails => logs error and returns null.
+   */
   private recordToInterval(item: AemoApiResponse["5MIN"][number]): AemoInterval | null {
     const tsMs = this.parseLocalBrisbaneMs(item.SETTLEMENTDATE);
     if (Number.isNaN(tsMs)) {
-      this.log("ERROR", `recordToInterval: Invalid date parse for "${item.SETTLEMENTDATE}". Got NaN.`);
+      this.log(
+        "ERROR",
+        `recordToInterval: invalid date parse for "${item.SETTLEMENTDATE}". got NaN.`
+      );
       return null;
     }
 
@@ -604,7 +602,9 @@ export class AemoData implements DurableObject {
       rrp: parseFloat(String(item.RRP)),
       totaldemand: item.TOTALDEMAND !== undefined ? parseFloat(String(item.TOTALDEMAND)) : null,
       periodtype: item.PERIODTYPE !== undefined ? String(item.PERIODTYPE) : null,
-      netinterchange: item.NETINTERCHANGE !== undefined ? parseFloat(String(item.NETINTERCHANGE)) : null,
+      netinterchange: item.NETINTERCHANGE !== undefined
+        ? parseFloat(String(item.NETINTERCHANGE))
+        : null,
       scheduledgeneration: item.SCHEDULEDGENERATION !== undefined
         ? parseFloat(String(item.SCHEDULEDGENERATION))
         : null,
@@ -629,23 +629,24 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Parse environment headers, ignoring invalid JSON.
+   * parseHeaders: parse environment variable with safe fallback if JSON is invalid.
    */
   private parseHeaders(raw: string): Record<string, string> {
     try {
       return raw.trim() ? JSON.parse(raw) : {};
     } catch {
+      // fallback if invalid JSON
       return {};
     }
   }
 
   /**
-   * Append +10:00 if no timezone is specified, parse, return ms.
+   * parseLocalBrisbaneMs: if no timezone is specified, forcibly append +10:00
+   * then parse as UTC. returns ms epoch time or NaN if invalid.
    */
   private parseLocalBrisbaneMs(dateStr: string): number {
     const hasOffsetRegex = /[Zz]|[\+\-]\d{2}:?\d{2}(\s*\(.*\))?$/;
     let adjusted = dateStr.trim();
-
     if (!hasOffsetRegex.test(adjusted)) {
       adjusted += "+10:00";
     }
@@ -654,7 +655,7 @@ export class AemoData implements DurableObject {
     if (Number.isNaN(ms)) {
       this.log(
         "ERROR",
-        `parseLocalBrisbaneMs: Failed to parse date string with +10 offset. original="${dateStr}", adjusted="${adjusted}"`
+        `parseLocalBrisbaneMs: failed parse => original="${dateStr}" adjusted="${adjusted}"`
       );
       return NaN;
     }
@@ -662,7 +663,40 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Log a message at the specified log level if the level is >= configured level.
+   * debugMinMax: runs a quick query to find min and max of settlement_ts in the entire table,
+   * logs them for diagnosing out-of-range queries or data.
+   */
+  private debugMinMax(): void {
+    try {
+      const boundaryRows = this.sql.exec<{
+        min_ts: number | null;
+        max_ts: number | null;
+        cnt: number | null;
+      }>(`
+        SELECT MIN(settlement_ts) AS min_ts,
+               MAX(settlement_ts) AS max_ts,
+               COUNT(*) AS cnt
+        FROM aemo_five_min_data
+      `);
+      if (boundaryRows.length > 0) {
+        const { min_ts, max_ts, cnt } = boundaryRows[0];
+        this.log(
+          "DEBUG",
+          `debugMinMax: Table boundaries => count=${cnt}, min_ts=${min_ts}, max_ts=${max_ts}`
+        );
+      } else {
+        this.log("DEBUG", "debugMinMax: boundary query returned no rows at all, table may be empty.");
+      }
+    } catch (err) {
+      this.log(
+        "ERROR",
+        `debugMinMax: error retrieving min/max => ${String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Logging helper: logs at the given level if within configured threshold.
    */
   private log(level: LogLevel, message: string): void {
     if (getLogPriority(level) >= this.logLevel) {

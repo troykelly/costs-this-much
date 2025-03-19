@@ -4,9 +4,9 @@ info:
   description: >
     This OpenAPI document describes the AEMO Data Logger & API Worker endpoints
     for handling token issuance, token refresh, data retrieval, and public JWKS
-    access for verifying RSA-signed tokens.  
-    Version includes paging changes and additional debug logging details.
-  version: "1.0.2"
+    access for verifying RSA-signed tokens.
+    In this version, extra debug logging, paging, and query clarifications are added.
+  version: "1.0.3"
 
 servers:
   - url: "https://api.coststhismuch.au"
@@ -142,44 +142,44 @@ paths:
         Requires a valid short-lived Bearer token.  
         If no query parameters are supplied, returns the most recent results in descending order.  
         Supports optional paging with "limit" and "offset".  
-        Additional query parameters allow for date ranges, region filtering, or a last-sec window:
-        • (start, end) - Milliseconds UTC, replace lastSec, results in ascending order  
-        • lastSec - Returns records from (now - lastSec) to now, in descending order  
-        • regionid - Filter by region ID  
+        Additional query parameters allow for date ranges, region filtering, or a lastSec window:
+        • lastSec (overrides start/end): returns records from (now - lastSec) to now, in descending order  
+        • start and end (both required): returns records between [start..end], in ascending order  
+        • regionid: optional region filter  
       parameters:
         - name: start
           in: query
-          description: Start (ms UTC), must be used with end. If provided, results are ascending by time.
+          description: Start timestamp in ms (UTC). Must be used with end if provided. 
           required: false
           schema:
             type: integer
         - name: end
           in: query
-          description: End (ms UTC), must be used with start. If provided, results are ascending by time.
+          description: End timestamp in ms (UTC). Must be used with start if provided.
           required: false
           schema:
             type: integer
         - name: lastSec
           in: query
-          description: Number of seconds from current time to look back (overrides start/end).
+          description: Number of seconds from the current time to look back (e.g. 604800 = 7 days).
           required: false
           schema:
             type: integer
         - name: regionid
           in: query
-          description: Filter results to a specific region ID.
+          description: Filter results to a specific region ID, e.g. "QLD1".
           required: false
           schema:
             type: string
         - name: limit
           in: query
-          description: Maximum number of records to return (for paging).
+          description: The maximum records to return (paging). Default=100 if not specified.
           required: false
           schema:
             type: integer
         - name: offset
           in: query
-          description: Offset for paging.
+          description: The row offset to begin returning data from (paging). Default=0 if not specified.
           required: false
           schema:
             type: integer
@@ -230,7 +230,7 @@ components:
       bearerFormat: JWT
       description: >
         Provide a valid short-lived access token in the "Authorization" header
-        using the Bearer scheme.
+        using the Bearer scheme (e.g. "Authorization: Bearer <token>").
 
   schemas:
     TokenRequest:
@@ -265,7 +265,7 @@ components:
           description: Expiration time in seconds for the short-lived token.
         refresh_token:
           type: string
-          description: Refresh token for obtaining new short-lived tokens.
+          description: A refresh token for obtaining new short-lived tokens.
       required:
         - token_type
         - access_token
@@ -294,47 +294,47 @@ components:
       properties:
         settlement_ts:
           type: integer
-          description: Timestamp in milliseconds (UTC).
+          description: The settlement timestamp in ms (UTC).
         regionid:
           type: string
-          description: Region identifier (e.g. "QLD1").
+          description: The region identifier, e.g. "QLD1", "NSW1", etc.
         region:
           type:
             - string
             - "null"
-          description: Region name, or null if not provided.
+          description: The region name, or null if not applicable.
         rrp:
           type:
             - number
             - "null"
-          description: Regional reference price for the interval.
+          description: The regional reference price associated with the interval.
         totaldemand:
           type:
             - number
             - "null"
-          description: Total demand in MW.
+          description: The total demand in MW.
         periodtype:
           type:
             - string
             - "null"
-          description: The period type (e.g., ENERGY).
+          description: The classification of the period, e.g. "ENERGY".
         netinterchange:
           type:
             - number
             - "null"
-          description: Net interchange value for the interval.
+          description: The net interchange value for the interval.
         scheduledgeneration:
           type:
             - number
             - "null"
-          description: Scheduled generation in MW.
+          description: The scheduled generation in MW.
         semischeduledgeneration:
           type:
             - number
             - "null"
-          description: Semi-scheduled generation in MW.
+          description: The semi-scheduled generation in MW.
         apcflag:
           type:
             - number
             - "null"
-          description: The APC flag value, if present.
+          description: The APC (Administered Price Cap) flag, if present.
