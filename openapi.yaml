@@ -1,0 +1,320 @@
+openapi: 3.1.0
+info:
+  title: AEMO Data Logger & API Worker
+  description: >
+    This OpenAPI document describes the AEMO Data Logger & API Worker endpoints
+    for handling token issuance, token refresh, data retrieval, and public JWKS
+    access for verifying RSA-signed tokens.
+  version: "1.0.0"
+
+servers:
+  - url: "https://api.coststhismuch.au"
+
+paths:
+  /.well-known/jwks.json:
+    get:
+      operationId: getJwks
+      summary: Retrieves the JSON Web Key Set (JWKS) for RS256 verification.
+      description: |
+        Returns a set of public keys that clients can use to verify JWTs
+        issued by this service.
+      responses:
+        '200':
+          description: Successful response containing JWKS.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kty:
+                          type: string
+                          description: Key type (e.g. RSA)
+                        alg:
+                          type: string
+                          description: Algorithm used (e.g. RS256)
+                        use:
+                          type: string
+                          description: Key usage (e.g. sig)
+                        kid:
+                          type: string
+                          description: A unique identifier for the key
+                        n:
+                          type: string
+                          description: The RSA public modulus, base64url-encoded
+                        e:
+                          type: string
+                          description: The RSA public exponent, base64url-encoded
+                example:
+                  keys:
+                    - kty: RSA
+                      alg: RS256
+                      use: sig
+                      kid: 0dbe173ec2632578
+                      n: "base64url_n_value"
+                      e: "AQAB"
+
+  /token:
+    post:
+      operationId: createToken
+      summary: Issues a short-lived and a refresh token.
+      description: >
+        Clients provide a valid client_id to receive a short-lived JWT (access token)
+        and a longer-lived refresh token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenRequest"
+            example:
+              client_id: "294aae21-4fac-46a6-9aa7-d354917b9603"
+      responses:
+        '200':
+          description: Returns a set of tokens upon success.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+              example:
+                token_type: "Bearer"
+                access_token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+                expires_in: 900
+                refresh_token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+        '401':
+          description: Invalid or unauthorised client_id.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "Invalid client_id"
+        '500':
+          description: Internal error handling the request.
+
+  /refresh:
+    post:
+      operationId: refreshToken
+      summary: Exchanges a refresh token for a short-lived access token.
+      description: >
+        Clients with a valid unexpired refresh token can obtain a new
+        short-lived access token without re-supplying their client credentials.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+            example:
+              refresh_token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+      responses:
+        '200':
+          description: A new short-lived token is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShortTokenResponse"
+              example:
+                token_type: "Bearer"
+                access_token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+                expires_in: 900
+        '400':
+          description: Refresh token was not provided or the request is invalid.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "Missing refresh token"
+        '401':
+          description: The provided refresh token is invalid or expired.
+        '500':
+          description: Internal error handling the refresh request.
+
+  /data:
+    get:
+      operationId: getData
+      summary: Retrieves 5-minute intervals from the Durable Object store.
+      description: >
+        Requires a valid short-lived Bearer token. Clients can optionally provide
+        query parameters such as start, end, lastSec, or regionid to filter data.
+      parameters:
+        - name: start
+          in: query
+          description: Start timestamp in milliseconds (UTC).
+          required: false
+          schema:
+            type: integer
+        - name: end
+          in: query
+          description: End timestamp in milliseconds (UTC).
+          required: false
+          schema:
+            type: integer
+        - name: lastSec
+          in: query
+          description: Number of seconds from the current time to look back.
+          required: false
+          schema:
+            type: integer
+        - name: regionid
+          in: query
+          description: Filter results to a specific region ID.
+          required: false
+          schema:
+            type: string
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: An array of intervals matching the query parameters.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/IntervalRecord"
+              example:
+                - settlement_ts: 1742358000000
+                  regionid: "QLD1"
+                  region: "QLD1"
+                  rrp: 56.78
+                  totaldemand: 5000
+                  periodtype: "ENERGY"
+                  netinterchange: 120.5
+                  scheduledgeneration: 3400
+                  semischeduledgeneration: 1200
+                  apcflag: 0
+                - settlement_ts: 1742358300000
+                  regionid: "QLD1"
+                  region: "QLD1"
+                  rrp: 60.12
+                  totaldemand: 5050
+                  periodtype: "ENERGY"
+                  netinterchange: 115.7
+                  scheduledgeneration: 3410
+                  semischeduledgeneration: 1190
+                  apcflag: 0
+        '401':
+          description: The bearer token is missing or invalid.
+        '500':
+          description: Error retrieving data from the Durable Object.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Provide a valid short-lived access token in the "Authorization" header
+        using the Bearer scheme.
+
+  schemas:
+    TokenRequest:
+      type: object
+      properties:
+        client_id:
+          type: string
+          description: The client identifier to exchange for tokens.
+      required:
+        - client_id
+
+    RefreshRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+          description: The previously issued refresh token.
+      required:
+        - refresh_token
+
+    TokenResponse:
+      type: object
+      properties:
+        token_type:
+          type: string
+          description: Typically "Bearer".
+        access_token:
+          type: string
+          description: The short-lived token for securing API requests.
+        expires_in:
+          type: integer
+          description: Expiration time in seconds for the short-lived token.
+        refresh_token:
+          type: string
+          description: Refresh token to obtain new short-lived tokens.
+      required:
+        - token_type
+        - access_token
+        - expires_in
+        - refresh_token
+
+    ShortTokenResponse:
+      type: object
+      properties:
+        token_type:
+          type: string
+          description: Typically "Bearer".
+        access_token:
+          type: string
+          description: The newly issued short-lived token.
+        expires_in:
+          type: integer
+          description: Expiration time in seconds for the short-lived token.
+      required:
+        - token_type
+        - access_token
+        - expires_in
+
+    IntervalRecord:
+      type: object
+      properties:
+        settlement_ts:
+          type: integer
+          description: Timestamp in milliseconds (UTC).
+        regionid:
+          type: string
+          description: Region identifier (e.g. "QLD1").
+        region:
+          type:
+            - string
+            - "null"
+          description: Region name, or null if not provided.
+        rrp:
+          type:
+            - number
+            - "null"
+          description: Regional reference price for the interval.
+        totaldemand:
+          type:
+            - number
+            - "null"
+          description: Total demand in MW.
+        periodtype:
+          type:
+            - string
+            - "null"
+          description: The type of the period (e.g., ENERGY).
+        netinterchange:
+          type:
+            - number
+            - "null"
+          description: Net interchange value for the interval.
+        scheduledgeneration:
+          type:
+            - number
+            - "null"
+          description: Scheduled generation in MW.
+        semischeduledgeneration:
+          type:
+            - number
+            - "null"
+          description: Semi-scheduled generation in MW.
+        apcflag:
+          type:
+            - number
+            - "null"
+          description: The APC flag value, if present.
