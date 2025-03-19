@@ -38,22 +38,29 @@ export default {
   handleJwks(env: Env): Response {
     try {
       const keys: KeyDefinition[] = JSON.parse(env.SIGNING_KEYS || "[]");
-      // Filter out revoked or expired. We'll just show any key that isn't explicitly revoked.
       const now = Date.now();
-      const activePublicKeys = keys
-        .filter((k) => !k.revoked && new Date(k.start).getTime() <= now && now < new Date(k.end).getTime())
-        .map((k) => {
-          // Real code must parse the public key to produce a valid JWK n/e. This is a simplified example.
-          return {
+      const activePublicKeys = [];
+
+      for (const k of keys) {
+        if (k.revoked) {
+          continue;
+        }
+        // Interpret k.start and k.expire as Unix seconds
+        const startTime = (k.start ?? 0) * 1000;
+        const endTime = (k.expire ?? 0) * 1000;
+        if (startTime <= now && now < endTime) {
+          // Use k.id as the kid
+          activePublicKeys.push({
             kty: "RSA",
             alg: "RS256",
             use: "sig",
-            kid: k.start,
-            // Oversimplified placeholders
+            kid: k.id,
+            // These are placeholders for the real RSA key components
             n: "PUBLIC_KEY_N_VALUE",
             e: "AQAB",
-          };
-        });
+          });
+        }
+      }
 
       return new Response(JSON.stringify({ keys: activePublicKeys }, null, 2), {
         headers: { "content-type": "application/json" },
@@ -203,7 +210,7 @@ function isValidClientId(clientId: string | undefined, env: Env): boolean {
 }
 
 /**
- * Finds a key in env.SIGNING_KEYS that is active (start <= now < end, not revoked),
+ * Finds a key in env.SIGNING_KEYS that is active (using start/expire as epoch),
  * and returns the latest one (the one with the newest start).
  */
 function findCurrentSigningKey(env: Env): { signingKey?: string; kid?: string } {
@@ -217,13 +224,13 @@ function findCurrentSigningKey(env: Env): { signingKey?: string; kid?: string } 
   let best: KeyDefinition | undefined;
   for (const k of keys) {
     if (k.revoked) continue;
-    const startTime = new Date(k.start).getTime();
-    const endTime = new Date(k.end).getTime();
+    const startTime = (k.start ?? 0) * 1000;
+    const endTime = (k.expire ?? 0) * 1000;
     if (startTime <= now && now < endTime) {
       if (!best) {
         best = k;
       } else {
-        const bestStart = new Date(best.start).getTime();
+        const bestStart = (best.start ?? 0) * 1000;
         if (startTime > bestStart) {
           best = k;
         }
@@ -231,7 +238,8 @@ function findCurrentSigningKey(env: Env): { signingKey?: string; kid?: string } 
     }
   }
   if (!best) return {};
-  return { signingKey: best.private, kid: best.start };
+  // Use best.id for the kid
+  return { signingKey: best.private, kid: best.id };
 }
 
 /**

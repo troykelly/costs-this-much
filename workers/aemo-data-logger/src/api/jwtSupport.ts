@@ -45,7 +45,6 @@ export async function createVerifier(
   }
 
   const kidFromToken = decodedHeader.kid;
-  // find key by kid
   let keys: KeyDefinition[] = [];
   try {
     keys = JSON.parse(env.SIGNING_KEYS || "[]");
@@ -55,11 +54,14 @@ export async function createVerifier(
 
   const now = Date.now();
   const candidate = keys.find((k) => {
+    // Interpret start and expire as Unix seconds
+    const startTime = (k.start ?? 0) * 1000;
+    const expireTime = (k.expire ?? 0) * 1000;
     return (
-      k.start === kidFromToken &&
+      k.id === kidFromToken &&
       !k.revoked &&
-      new Date(k.start).getTime() <= now &&
-      now < new Date(k.end).getTime()
+      startTime <= now &&
+      now < expireTime
     );
   });
   if (!candidate) {
