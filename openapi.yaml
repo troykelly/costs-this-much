@@ -5,8 +5,11 @@ info:
     This OpenAPI document describes the AEMO Data Logger & API Worker endpoints
     for handling token issuance, token refresh, data retrieval, and public JWKS
     access for verifying RSA-signed tokens.
-    In this version, extra debug logging, paging, and query clarifications are added.
-  version: "1.0.3"
+
+    This version includes:  
+    - Enhanced debug logging in the data DO.  
+    - Additional details on paging and query parameters for /data.
+  version: "1.0.4"
 
 servers:
   - url: "https://api.coststhismuch.au"
@@ -21,7 +24,7 @@ paths:
         issued by this service.
       responses:
         '200':
-          description: Successful response containing JWKS.
+          description: JSON Web Key Set (JWKS).
           content:
             application/json:
               schema:
@@ -40,16 +43,16 @@ paths:
                           description: Algorithm used (e.g. RS256)
                         use:
                           type: string
-                          description: Key usage (e.g. sig)
+                          description: Key usage (sig)
                         kid:
                           type: string
-                          description: A unique identifier for the key
+                          description: Unique ID for the key
                         n:
                           type: string
-                          description: The RSA public modulus, base64url-encoded
+                          description: RSA public modulus (base64url)
                         e:
                           type: string
-                          description: The RSA public exponent, base64url-encoded
+                          description: RSA public exponent (base64url)
                 example:
                   keys:
                     - kty: RSA
@@ -64,8 +67,8 @@ paths:
       operationId: createToken
       summary: Issues a short-lived and a refresh token.
       description: >
-        Clients provide a valid client_id to receive a short-lived JWT (access token)
-        and a longer-lived refresh token.
+        Provides a short-lived JWT (access token) and a longer-lived refresh token,
+        if a valid client_id is provided.
       requestBody:
         required: true
         content:
@@ -73,19 +76,19 @@ paths:
             schema:
               $ref: "#/components/schemas/TokenRequest"
             example:
-              client_id: "294aae21-4fac-46a6-9aa7-d354917b9603"
+              client_id: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
       responses:
         '200':
-          description: Returns a set of tokens upon success.
+          description: A set of tokens upon success.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/TokenResponse"
               example:
                 token_type: "Bearer"
-                access_token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+                access_token: "eyJhbGciOiJSUzI1NiIsInR..."
                 expires_in: 900
-                refresh_token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+                refresh_token: "eyJhbGciOiJSUzI1NiIsInR..."
         '401':
           description: Invalid or unauthorised client_id.
           content:
@@ -99,10 +102,10 @@ paths:
   /refresh:
     post:
       operationId: refreshToken
-      summary: Exchanges a refresh token for a short-lived access token.
+      summary: Exchanges a refresh token for a new short-lived token.
       description: >
-        Clients with a valid unexpired refresh token can obtain a new
-        short-lived access token without re-supplying their client credentials.
+        Clients with a valid refresh token can obtain a new short-lived token,
+        without re-supplying their client credentials.
       requestBody:
         required: true
         content:
@@ -113,73 +116,71 @@ paths:
               refresh_token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
       responses:
         '200':
-          description: A new short-lived token is returned.
+          description: Returns a new short-lived token.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ShortTokenResponse"
               example:
                 token_type: "Bearer"
-                access_token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+                access_token: "eyJhbGciOiJSUzI1NiIsInR..."
                 expires_in: 900
         '400':
-          description: Refresh token was not provided or the request is invalid.
+          description: Refresh token was missing or invalid request.
           content:
             text/plain:
               schema:
                 type: string
               example: "Missing refresh token"
         '401':
-          description: The provided refresh token is invalid or expired.
+          description: Provided refresh token is invalid or expired.
         '500':
-          description: Internal error handling the refresh request.
+          description: Error from server while refreshing.
 
   /data:
     get:
       operationId: getData
-      summary: Retrieves 5-minute intervals from the shared DO store (SQL-based).
+      summary: Retrieves 5-minute intervals from the shared DO (SQL).
       description: |
         Requires a valid short-lived Bearer token.  
-        If no query parameters are supplied, returns the most recent results in descending order.  
-        Supports optional paging with "limit" and "offset".  
-        Additional query parameters allow for date ranges, region filtering, or a lastSec window:
-        • lastSec (overrides start/end): returns records from (now - lastSec) to now, in descending order  
-        • start and end (both required): returns records between [start..end], in ascending order  
-        • regionid: optional region filter  
+        If no query parameters, returns the most recent results descending.  
+        Optional parameters: lastSec => now - lastSec..now (descending).  
+        Or start/end => ascending. regionid => optional filter.  
+        limit/offset => paging.
       parameters:
         - name: start
           in: query
-          description: Start timestamp in ms (UTC). Must be used with end if provided. 
+          description: Start ms UTC. Must be used with end if provided (returns ascending).
           required: false
           schema:
             type: integer
         - name: end
           in: query
-          description: End timestamp in ms (UTC). Must be used with start if provided.
+          description: End ms UTC. Must be used with start if provided (returns ascending).
           required: false
           schema:
             type: integer
         - name: lastSec
           in: query
-          description: Number of seconds from the current time to look back (e.g. 604800 = 7 days).
+          description: Number of seconds from the current time to look back (descending).
           required: false
           schema:
             type: integer
         - name: regionid
           in: query
-          description: Filter results to a specific region ID, e.g. "QLD1".
+          description: Filter results to a particular region ID.
           required: false
           schema:
             type: string
         - name: limit
           in: query
-          description: The maximum records to return (paging). Default=100 if not specified.
+          description: Paging: maximum records. Default=100.
           required: false
           schema:
             type: integer
         - name: offset
           in: query
-          description: The row offset to begin returning data from (paging). Default=0 if not specified.
+          description: Paging: offset. Default=0.
           required: false
           schema:
             type: integer
@@ -187,7 +188,7 @@ paths:
         - bearerAuth: []
       responses:
         '200':
-          description: An array of intervals matching the query parameters (or latest data if none provided).
+          description: An array of intervals matching the query or latest data if none provided.
           content:
             application/json:
               schema:
@@ -220,7 +221,7 @@ paths:
         '400':
           description: Invalid query parameters specified.
         '500':
-          description: Error retrieving data from the Durable Object.
+          description: An error retrieving data.
 
 components:
   securitySchemes:
@@ -229,8 +230,7 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: >
-        Provide a valid short-lived access token in the "Authorization" header
-        using the Bearer scheme (e.g. "Authorization: Bearer <token>").
+        Bearer token: "Authorization: Bearer <jwt>"
 
   schemas:
     TokenRequest:
@@ -238,7 +238,7 @@ components:
       properties:
         client_id:
           type: string
-          description: The client identifier to exchange for tokens.
+          description: Unique client identifier to request tokens.
       required:
         - client_id
 
@@ -247,7 +247,7 @@ components:
       properties:
         refresh_token:
           type: string
-          description: The previously issued refresh token.
+          description: The existing refresh token to be exchanged.
       required:
         - refresh_token
 
@@ -256,16 +256,16 @@ components:
       properties:
         token_type:
           type: string
-          description: Typically "Bearer".
+          description: Usually "Bearer".
         access_token:
           type: string
-          description: The short-lived token for securing API requests.
+          description: Short-lived JWT.
         expires_in:
           type: integer
-          description: Expiration time in seconds for the short-lived token.
+          description: Expiry in seconds.
         refresh_token:
           type: string
-          description: A refresh token for obtaining new short-lived tokens.
+          description: Longer-lived refresh token.
       required:
         - token_type
         - access_token
@@ -277,13 +277,13 @@ components:
       properties:
         token_type:
           type: string
-          description: Typically "Bearer".
+          description: Usually "Bearer".
         access_token:
           type: string
-          description: The newly issued short-lived token.
+          description: The newly issued short-lived access token.
         expires_in:
           type: integer
-          description: Expiration time in seconds for the short-lived token.
+          description: Expiry in seconds.
       required:
         - token_type
         - access_token
@@ -294,47 +294,47 @@ components:
       properties:
         settlement_ts:
           type: integer
-          description: The settlement timestamp in ms (UTC).
+          description: Settlement timestamp in ms (UTC).
         regionid:
           type: string
-          description: The region identifier, e.g. "QLD1", "NSW1", etc.
+          description: Region ID, e.g. "QLD1".
         region:
           type:
             - string
             - "null"
-          description: The region name, or null if not applicable.
+          description: Region name (if known).
         rrp:
           type:
             - number
             - "null"
-          description: The regional reference price associated with the interval.
+          description: Regional reference price for the interval.
         totaldemand:
           type:
             - number
             - "null"
-          description: The total demand in MW.
+          description: Total demand (MW).
         periodtype:
           type:
             - string
             - "null"
-          description: The classification of the period, e.g. "ENERGY".
+          description: e.g. "ENERGY".
         netinterchange:
           type:
             - number
             - "null"
-          description: The net interchange value for the interval.
+          description: Net interchange (MW).
         scheduledgeneration:
           type:
             - number
             - "null"
-          description: The scheduled generation in MW.
+          description: Scheduled generation (MW).
         semischeduledgeneration:
           type:
             - number
             - "null"
-          description: The semi-scheduled generation in MW.
+          description: Semi-scheduled generation (MW).
         apcflag:
           type:
             - number
             - "null"
-          description: The APC (Administered Price Cap) flag, if present.
+          description: APC flag, if applicable.
