@@ -4,13 +4,13 @@
  * IMPORTANT: AEMO data is fixed to Australia/Brisbane time (UTC+10), and the database is
  * storing epoch timestamps. This version stores timestamps in milliseconds (ms).
  *
- * This version includes an additional endpoint for data retrieval:
- *   GET /range?start=...&end=...&lastSec=...&regionid=... (all optional)
- *     - If lastSec is provided, returns data from (now - lastSec*1000) to now, provided lastSec <= 604800 (7 days).
- *     - If start and end (milliseconds) are provided, returns data from start to end, provided (end - start) <= 604800000 ms.
- *     - If no parameters are provided, returns the most recent (latest) data for all available regions.
- *     - If regionid is provided with any valid scenario above, filters records by regionid.
- *     - Otherwise (e.g. mixing lastSec with start/end, providing only start without end, etc.), the request is rejected.
+ * This version includes endpoints for data retrieval:
+ *   - POST /sync: used by the scheduled data logger to ingest intervals.
+ *   - GET /range: retrieve intervals with optional filters.
+ *
+ * Updated to support paging (limit & offset parameters) and ensure we return
+ * recent records in descending timestamp order when no query parameters are
+ * provided. Additional debug logging and documentation added for troubleshooting.
  */
 
 import type {
@@ -65,7 +65,7 @@ export interface IntervalRecord extends Record<string, SqlStorageValue> {
 /** Single 5-minute interval from AEMO, plus a derived epoch timestamp (ms). */
 export interface AemoInterval {
   settlementdate: string;
-  settlement_ts: number; // stored in ms
+  settlement_ts: number;
   regionid: string;
   rrp: number;
   totaldemand: number | null;
@@ -139,7 +139,7 @@ export class AemoData implements DurableObject {
   /**
    * Dispatch fetch requests for:
    * - POST /sync: used by the scheduled data logger to ingest intervals.
-   * - GET /range: retrieve intervals with optional filters.
+   * - GET /range: retrieve intervals with optional filters and paging.
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -183,7 +183,7 @@ export class AemoData implements DurableObject {
     if (!resp.ok) {
       const errText = await resp.text();
       const msg = `AEMO API error ${resp.status}: ${errText}`;
-      this.log("WARNING", msg);
+      this.log("WARN", msg);
       return new Response(msg, { status: 500 });
     }
 
@@ -199,7 +199,7 @@ export class AemoData implements DurableObject {
 
     if (!Array.isArray(data["5MIN"])) {
       const msg = `Missing or invalid "5MIN" array in AEMO data.`;
-      this.log("WARNING", msg);
+      this.log("WARN", msg);
       return new Response(msg, { status: 500 });
     }
 
@@ -210,7 +210,7 @@ export class AemoData implements DurableObject {
 
     if (!intervals.length) {
       const msg = "No intervals parsed from AEMO data. Giving up.";
-      this.log("WARNING", msg);
+      this.log("WARN", msg);
       return new Response(msg, { status: 200 });
     }
 
@@ -235,7 +235,7 @@ export class AemoData implements DurableObject {
 
     if (!regionIds.length) {
       const msg = "No region IDs found in AEMO data. Aborting.";
-      this.log("WARNING", msg);
+      this.log("WARN", msg);
       return new Response(msg, { status: 200 });
     }
 
@@ -323,21 +323,31 @@ export class AemoData implements DurableObject {
    *   start: ms
    *   end: ms
    *   regionid: string
-   * If none of the above are provided, returns the most recent (latest) data for all available regions.
-   * Otherwise:
-   * - Cannot combine lastSec with start/end
-   * - Must provide both start and end, or neither
-   * - Ranges larger than 604800s (7 days) are rejected.
+   *   limit: number of records to return (for paging, defaults to 100 if not specified)
+   *   offset: offset to begin records (for paging, defaults to 0 if not specified)
+   *
+   * If lastSec is provided, it overrides start/end. Data is returned in descending order.
+   * If start/end are provided, data is returned in ascending order by timestamp.
+   * If no param is provided, returns the latest records (descending order) up to `limit`.
    */
   private async handleRangeRequest(url: URL): Promise<Response> {
     try {
+      // Parse paging parameters
+      const limitParamRaw = url.searchParams.get("limit");
+      const offsetParamRaw = url.searchParams.get("offset");
+      let limit = parseInt(limitParamRaw ?? "100", 10);
+      let offset = parseInt(offsetParamRaw ?? "0", 10);
+      if (Number.isNaN(limit) || limit <= 0) limit = 100;
+      if (Number.isNaN(offset) || offset < 0) offset = 0;
+      this.log("DEBUG", `Paging with limit=${limit}, offset=${offset}`);
+
       const nowMs = Date.now();
       const lastSecParam = url.searchParams.get("lastSec");
       const startParam = url.searchParams.get("start");
       const endParam = url.searchParams.get("end");
       const regionParam = url.searchParams.get("regionid");
 
-      // If lastSec is provided, ensure no start/end is present
+      // If lastSec is provided, ensure no start/end is present, and do descending by default.
       if (lastSecParam) {
         if (startParam || endParam) {
           return new Response(
@@ -360,7 +370,8 @@ export class AemoData implements DurableObject {
         }
         const startMs = nowMs - lastSec * 1000;
         const endMs = nowMs;
-        return this.queryRange(startMs, endMs, regionParam, true);
+        // Descending for lastSec
+        return this.queryRange(startMs, endMs, regionParam, false, limit, offset);
       }
 
       // If start or end is present, both must be
@@ -391,40 +402,12 @@ export class AemoData implements DurableObject {
             headers: { "content-type": "application/json" },
           });
         }
-        return this.queryRange(startMs, endMs, regionParam, false);
+        // Ascending for explicit start/end range
+        return this.queryRange(startMs, endMs, regionParam, true, limit, offset);
       }
 
-      // No params at all => return the most recent data for each available region
-      // We'll find the max settlement_ts, then return all rows for that timestamp,
-      // optionally filtering by regionid if provided.
-      const maxCursor = this.sql.exec<{ max_ts: number }>(
-        "SELECT MAX(settlement_ts) AS max_ts FROM aemo_five_min_data;"
-      );
-      if (!maxCursor.length || !maxCursor[0].max_ts) {
-        // No data
-        return new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      const maxTs = maxCursor[0].max_ts;
-      let query = `
-        SELECT settlement_ts, regionid, region, rrp, totaldemand, periodtype,
-               netinterchange, scheduledgeneration, semischeduledgeneration, apcflag
-        FROM aemo_five_min_data
-        WHERE settlement_ts = ?`;
-      const values: (number | string)[] = [maxTs];
-      if (regionParam) {
-        query += " AND regionid = ?";
-        values.push(regionParam);
-      }
-      // Return all records with the max timestamp (latest) for the optional region
-      query += " ORDER BY regionid ASC LIMIT 20000";
-      const rows = this.sql.exec<IntervalRecord>(query, ...values);
-      return new Response(JSON.stringify(rows), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      // No params at all => return the most recent records, descending
+      return this.queryLatestRecords(regionParam, limit, offset);
     } catch (err) {
       this.log("ERROR", `handleRangeRequest error: ${String(err)}`);
       return new Response(JSON.stringify({ error: String(err) }), {
@@ -435,39 +418,99 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Helper to query from startMs .. endMs, optionally filtering by regionid. If `asc` is true,
-   * we order by settlement_ts ASC; otherwise ASC as well for consistency (or any approach).
+   * Retrieve rows from the database between startMs and endMs, with optional region filter,
+   * ordering ascending or descending as specified. Applies limit/offset for paging.
+   *
+   * @param {number} startMs The lower bound of the timestamp range (inclusive).
+   * @param {number} endMs The upper bound of the timestamp range (inclusive).
+   * @param {string|null} regionParam Optional region ID filter.
+   * @param {boolean} asc If true, order by settlement_ts ascending; else descending.
+   * @param {number} limit The maximum rows to return (paging).
+   * @param {number} offset The row offset to begin returning data (paging).
+   * @return {Response} JSON response with the retrieved rows or an error.
    */
   private queryRange(
     startMs: number,
     endMs: number,
     regionParam: string | null,
-    asc: boolean
+    asc: boolean,
+    limit: number,
+    offset: number
   ): Response {
     try {
-      const regionClause = regionParam ? " AND regionid = ?" : "";
-      const values: (number | string)[] = [startMs, endMs];
-      if (regionParam) {
-        values.push(regionParam);
-      }
-      const orderBy = asc ? "ASC" : "ASC"; // Currently both are ASC for consistency
-      const query = `
+      // Correct the earlier 'ASC' duplication bug to support ascending/descending
+      const orderBy = asc ? "ASC" : "DESC";
+      let query = `
         SELECT settlement_ts, regionid, region, rrp, totaldemand, periodtype,
                netinterchange, scheduledgeneration, semischeduledgeneration, apcflag
         FROM aemo_five_min_data
         WHERE settlement_ts >= ? AND settlement_ts <= ?
-              ${regionClause}
-        ORDER BY settlement_ts ${orderBy}
-        LIMIT 20000
       `;
-      this.log("DEBUG", JSON.stringify({query, values}));
+      const values: (number | string)[] = [startMs, endMs];
+
+      if (regionParam) {
+        query += " AND regionid = ?";
+        values.push(regionParam);
+      }
+
+      query += ` ORDER BY settlement_ts ${orderBy} LIMIT ? OFFSET ?`;
+      values.push(limit, offset);
+
+      this.log("DEBUG", JSON.stringify({ query, values }));
       const rows = this.sql.exec<IntervalRecord>(query, ...values);
+      this.log("DEBUG", `Fetched ${rows.length} record(s) from queryRange.`);
       return new Response(JSON.stringify(rows), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
     } catch (err) {
       this.log("ERROR", `queryRange error: ${String(err)}`);
+      return new Response(JSON.stringify({ error: String(err) }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
+
+  /**
+   * Retrieve the most recent records across all regions (unless filtered by regionParam),
+   * ordered by descending timestamp. Applies the provided limit and offset for paging.
+   *
+   * @param {string|null} regionParam Optional region ID filter.
+   * @param {number} limit The maximum rows to return (paging).
+   * @param {number} offset The row offset to begin returning data (paging).
+   * @return {Response} JSON response with the retrieved rows or an error.
+   */
+  private queryLatestRecords(
+    regionParam: string | null,
+    limit: number,
+    offset: number
+  ): Response {
+    try {
+      let query = `
+        SELECT settlement_ts, regionid, region, rrp, totaldemand, periodtype,
+               netinterchange, scheduledgeneration, semischeduledgeneration, apcflag
+        FROM aemo_five_min_data
+      `;
+      const values: (number | string)[] = [];
+
+      if (regionParam) {
+        query += " WHERE regionid = ?";
+        values.push(regionParam);
+      }
+
+      query += ` ORDER BY settlement_ts DESC LIMIT ? OFFSET ?`;
+      values.push(limit, offset);
+
+      this.log("DEBUG", JSON.stringify({ query, values }));
+      const rows = this.sql.exec<IntervalRecord>(query, ...values);
+      this.log("DEBUG", `Fetched ${rows.length} record(s) from queryLatestRecords.`);
+      return new Response(JSON.stringify(rows), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    } catch (err) {
+      this.log("ERROR", `queryLatestRecords error: ${String(err)}`);
       return new Response(JSON.stringify({ error: String(err) }), {
         status: 500,
         headers: { "content-type": "application/json" },
@@ -541,6 +584,9 @@ export class AemoData implements DurableObject {
     return ms;
   }
 
+  /**
+   * Log a message at the specified log level if the level is >= configured level.
+   */
   private log(level: LogLevel, message: string): void {
     if (getLogPriority(level) >= this.logLevel) {
       console.log(`[${level}] ${message}`);
