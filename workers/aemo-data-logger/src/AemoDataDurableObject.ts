@@ -8,9 +8,9 @@
  *   - POST /sync: used by the scheduled data logger to ingest intervals.
  *   - GET /range: retrieve intervals with optional filters and paging.
  *
- * Updated to include more detailed debug logging and to ensure data is returned
- * for the "/data" query with no parameters, which should display recent records
- * in descending order. If no data is found, additional logs will help diagnose.
+ * Updated to handle a possible undefined “length” property by doing a fallback check, 
+ * and to provide even more detailed debug logging so that any discrepancy in 
+ * returned data or row count can be traced.
  */
 
 import type {
@@ -450,6 +450,10 @@ export class AemoData implements DurableObject {
    * Retrieve rows from the database between startMs and endMs, with optional region filter,
    * and order ascending or descending. Applies limit/offset for paging.
    *
+   * If the returned value from this.sql.exec is not an array for any reason,
+   * we do a fallback to avoid "undefined" issues. In normal usage, though,
+   * .exec() should always return an array.
+   *
    * @param {number} startMs The lower bound of the timestamp range (inclusive).
    * @param {number} endMs The upper bound of the timestamp range (inclusive).
    * @param {string|null} regionParam Optional region ID filter.
@@ -484,17 +488,31 @@ export class AemoData implements DurableObject {
       query += ` ORDER BY settlement_ts ${orderBy} LIMIT ? OFFSET ?`;
       values.push(limit, offset);
 
-      this.log("DEBUG", `queryRange: Final SQL="${query}" with values=${JSON.stringify(values)}`);
-      const rows = this.sql.exec<IntervalRecord>(query, ...values);
-      this.log("DEBUG", `queryRange: Retrieved ${rows.length} record(s) from DB.`);
+      this.log(
+        "DEBUG",
+        `queryRange: Final SQL="${query.trim()}" with values=${JSON.stringify(values)}`
+      );
 
-      // Optionally log the first row if any
-      if (rows.length > 0) {
-        const sample = rows[0];
-        this.log("DEBUG", `queryRange: Sample row => settlement_ts=${sample.settlement_ts}, regionid=${sample.regionid}, rrp=${sample.rrp}`);
+      const result = this.sql.exec<IntervalRecord>(query, ...values);
+      // Safely derive the row count if possible
+      const rowCount = Array.isArray(result) ? result.length : 0;
+
+      this.log(
+        "DEBUG",
+        `queryRange: Retrieved ${rowCount} record(s) from DB. (Type of result: ${typeof result})`
+      );
+
+      if (rowCount > 0) {
+        const sample = result[0];
+        this.log(
+          "DEBUG",
+          `queryRange: Sample row => settlement_ts=${sample.settlement_ts}, regionid=${sample.regionid}, rrp=${sample.rrp}`
+        );
+      } else {
+        this.log("DEBUG", "queryRange: No rows returned by the query.");
       }
 
-      return new Response(JSON.stringify(rows), {
+      return new Response(JSON.stringify(result), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -510,6 +528,7 @@ export class AemoData implements DurableObject {
   /**
    * Retrieve the most recent records across all regions (unless filtered by regionParam),
    * ordered by descending timestamp. Applies the provided limit and offset for paging.
+   * If the return isn't an array, fallback is used to ensure no "undefined" logging occurs.
    *
    * @param {string|null} regionParam Optional region ID filter.
    * @param {number} limit The maximum rows to return (paging).
@@ -537,18 +556,27 @@ export class AemoData implements DurableObject {
       query += ` ORDER BY settlement_ts DESC LIMIT ? OFFSET ?`;
       values.push(limit, offset);
 
-      this.log("DEBUG", `queryLatestRecords: Final SQL="${query}" with values=${JSON.stringify(values)}`);
-      const rows = this.sql.exec<IntervalRecord>(query, ...values);
-      this.log("DEBUG", `queryLatestRecords: Retrieved ${rows.length} record(s) from DB.`);
+      this.log(
+        "DEBUG",
+        `queryLatestRecords: Final SQL="${query.trim()}" with values=${JSON.stringify(values)}`
+      );
 
-      if (rows.length > 0) {
-        const sample = rows[0];
-        this.log("DEBUG", `queryLatestRecords: Sample row => settlement_ts=${sample.settlement_ts}, regionid=${sample.regionid}, rrp=${sample.rrp}`);
+      const result = this.sql.exec<IntervalRecord>(query, ...values);
+      const rowCount = Array.isArray(result) ? result.length : 0;
+
+      this.log(
+        "DEBUG",
+        `queryLatestRecords: Retrieved ${rowCount} record(s) from DB. (Type of result: ${typeof result})`
+      );
+
+      if (rowCount > 0) {
+        const sample = result[0];
+        this.log("DEBUG", `queryLatestRecords: Sample => settlement_ts=${sample.settlement_ts}, regionid=${sample.regionid}, rrp=${sample.rrp}`);
       } else {
-        this.log("DEBUG", "queryLatestRecords: No records returned.");
+        this.log("DEBUG", "queryLatestRecords: No rows returned by the query.");
       }
 
-      return new Response(JSON.stringify(rows), {
+      return new Response(JSON.stringify(result), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -624,7 +652,10 @@ export class AemoData implements DurableObject {
 
     const ms = Date.parse(adjusted);
     if (Number.isNaN(ms)) {
-      this.log("ERROR", `parseLocalBrisbaneMs: Failed to parse date string with +10 offset. original="${dateStr}", adjusted="${adjusted}"`);
+      this.log(
+        "ERROR",
+        `parseLocalBrisbaneMs: Failed to parse date string with +10 offset. original="${dateStr}", adjusted="${adjusted}"`
+      );
       return NaN;
     }
     return ms;

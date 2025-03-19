@@ -1,11 +1,12 @@
 openapi: 3.1.0
 info:
-  title: AEMO Data Logger & API Worker
+  title: "AEMO Data Logger & API Worker"
   description: >
     This OpenAPI document describes the AEMO Data Logger & API Worker endpoints
     for handling token issuance, token refresh, data retrieval, and public JWKS
-    access for verifying RSA-signed tokens.
-  version: "1.0.1"
+    access for verifying RSA-signed tokens.  
+    Version includes paging changes and additional debug logging details.
+  version: "1.0.2"
 
 servers:
   - url: "https://api.coststhismuch.au"
@@ -54,7 +55,7 @@ paths:
                     - kty: RSA
                       alg: RS256
                       use: sig
-                      kid: 0dbe173ec2632578
+                      kid: "0dbe173ec2632578"
                       n: "base64url_n_value"
                       e: "AQAB"
 
@@ -141,26 +142,26 @@ paths:
         Requires a valid short-lived Bearer token.  
         If no query parameters are supplied, returns the most recent results in descending order.  
         Supports optional paging with "limit" and "offset".  
-        Additional query parameters allow for date ranges or region filtering:
-        • start / end (milliseconds UTC) for explicit range (ordered ascending).  
-        • lastSec to retrieve data from (nowMs - lastSec) to now, in descending order.  
-        • regionid filters by a specific region.  
+        Additional query parameters allow for date ranges, region filtering, or a last-sec window:
+        • (start, end) - Milliseconds UTC, replace lastSec, results in ascending order  
+        • lastSec - Returns records from (now - lastSec) to now, in descending order  
+        • regionid - Filter by region ID  
       parameters:
         - name: start
           in: query
-          description: Start timestamp in milliseconds (UTC) (must be used with end).
+          description: Start (ms UTC), must be used with end. If provided, results are ascending by time.
           required: false
           schema:
             type: integer
         - name: end
           in: query
-          description: End timestamp in milliseconds (UTC) (must be used with start).
+          description: End (ms UTC), must be used with start. If provided, results are ascending by time.
           required: false
           schema:
             type: integer
         - name: lastSec
           in: query
-          description: Number of seconds from the current time to look back (overrides start/end).
+          description: Number of seconds from current time to look back (overrides start/end).
           required: false
           schema:
             type: integer
@@ -264,7 +265,7 @@ components:
           description: Expiration time in seconds for the short-lived token.
         refresh_token:
           type: string
-          description: Refresh token to obtain new short-lived tokens.
+          description: Refresh token for obtaining new short-lived tokens.
       required:
         - token_type
         - access_token
@@ -316,7 +317,7 @@ components:
           type:
             - string
             - "null"
-          description: The type of the period (e.g., ENERGY).
+          description: The period type (e.g., ENERGY).
         netinterchange:
           type:
             - number
