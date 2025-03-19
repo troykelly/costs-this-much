@@ -12,7 +12,6 @@ workers_dev = true
     { name = "AEMO_DATA", class_name = "AemoData" },
     { name = "API_ABUSE", class_name = "ApiAbuse" }
   ]
-  script_name = "aemo-data-logger"
 
 [[migrations]]
 tag = "v1"

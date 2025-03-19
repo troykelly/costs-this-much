@@ -6,10 +6,11 @@
  *
  * This version includes an additional endpoint for data retrieval:
  *   GET /range?start=...&end=...&lastSec=...&regionid=... (all optional)
- *     - If lastSec is provided, returns data from (now - lastSec*1000) to now.
- *     - Otherwise, if start and end are provided, returns data in that range.
- *     - If regionid is provided, filters records by regionid.
- *     - If no parameters are provided, defaults to a recent window (last 300 seconds).
+ *     - If lastSec is provided, returns data from (now - lastSec*1000) to now, provided lastSec <= 604800 (7 days).
+ *     - If start and end (milliseconds) are provided, returns data from start to end, provided (end - start) <= 604800000 ms.
+ *     - If no parameters are provided, returns the most recent (latest) data for all available regions.
+ *     - If regionid is provided with any valid scenario above, filters records by regionid.
+ *     - Otherwise (e.g. mixing lastSec with start/end, providing only start without end, etc.), the request is rejected.
  */
 
 import type {
@@ -170,9 +171,9 @@ export class AemoData implements DurableObject {
         method: "POST",
         headers: {
           ...headers,
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify(requestBody),
       });
     } catch (err) {
       const msg = `AEMO API fetch failed: ${(err as Error).message}`;
@@ -318,74 +319,154 @@ export class AemoData implements DurableObject {
 
   /**
    * Handle GET /range for data retrieval. Query parameters:
-   *   lastSec: number (if provided, we override start/end with now-lastSec..now)
+   *   lastSec: number (if provided, returns data [nowMs - lastSec..nowMs], must be <= 604800)
    *   start: ms
    *   end: ms
    *   regionid: string
-   * If none are provided, default to the last 300 seconds.
+   * If none of the above are provided, returns the most recent (latest) data for all available regions.
+   * Otherwise:
+   * - Cannot combine lastSec with start/end
+   * - Must provide both start and end, or neither
+   * - Ranges larger than 604800s (7 days) are rejected.
    */
   private async handleRangeRequest(url: URL): Promise<Response> {
-    const nowMs = Date.now();
-    let startParam = url.searchParams.get("start");
-    let endParam = url.searchParams.get("end");
-    const lastSecParam = url.searchParams.get("lastSec");
-    const regionParam = url.searchParams.get("regionid");
-
-    let startMs: number;
-    let endMs: number;
-
-    if (lastSecParam) {
-      const sec = parseInt(lastSecParam, 10);
-      if (Number.isNaN(sec) || sec <= 0) {
-        // fallback to default
-        startMs = nowMs - 300000;
-        endMs = nowMs;
-      } else {
-        startMs = nowMs - sec * 1000;
-        endMs = nowMs;
-      }
-    } else if (startParam && endParam) {
-      const startNum = parseInt(startParam, 10);
-      const endNum = parseInt(endParam, 10);
-      if (Number.isNaN(startNum) || Number.isNaN(endNum) || startNum > endNum) {
-        // fallback
-        startMs = nowMs - 300000;
-        endMs = nowMs;
-      } else {
-        startMs = startNum;
-        endMs = endNum;
-      }
-    } else {
-      // Default last 300 seconds
-      startMs = nowMs - 300000;
-      endMs = nowMs;
-    }
-
-    const regionClause = regionParam ? " AND regionid = ?" : "";
-    const values: (string | number)[] = [startMs, endMs];
-    if (regionParam) {
-      values.push(regionParam);
-    }
-
     try {
-      const query = `
+      const nowMs = Date.now();
+      const lastSecParam = url.searchParams.get("lastSec");
+      const startParam = url.searchParams.get("start");
+      const endParam = url.searchParams.get("end");
+      const regionParam = url.searchParams.get("regionid");
+
+      // If lastSec is provided, ensure no start/end is present
+      if (lastSecParam) {
+        if (startParam || endParam) {
+          return new Response(
+            JSON.stringify({ error: "Cannot combine lastSec with start or end." }),
+            { status: 400, headers: { "content-type": "application/json" } }
+          );
+        }
+        const lastSec = parseInt(lastSecParam, 10);
+        if (isNaN(lastSec) || lastSec <= 0) {
+          return new Response(JSON.stringify({ error: "Invalid lastSec." }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (lastSec > 604800) {
+          return new Response(JSON.stringify({ error: "Requested range too large." }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        const startMs = nowMs - lastSec * 1000;
+        const endMs = nowMs;
+        return this.queryRange(startMs, endMs, regionParam, true);
+      }
+
+      // If start or end is present, both must be
+      if (startParam || endParam) {
+        if (!startParam || !endParam) {
+          return new Response(
+            JSON.stringify({ error: "Must supply both start and end or neither." }),
+            { status: 400, headers: { "content-type": "application/json" } }
+          );
+        }
+        const startMs = parseInt(startParam, 10);
+        const endMs = parseInt(endParam, 10);
+        if (isNaN(startMs) || isNaN(endMs)) {
+          return new Response(JSON.stringify({ error: "Invalid start or end." }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (endMs < startMs) {
+          return new Response(JSON.stringify({ error: "end must be >= start." }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if ((endMs - startMs) > 604800000) {
+          return new Response(JSON.stringify({ error: "Requested range too large." }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return this.queryRange(startMs, endMs, regionParam, false);
+      }
+
+      // No params at all => return the most recent data for each available region
+      // We'll find the max settlement_ts, then return all rows for that timestamp,
+      // optionally filtering by regionid if provided.
+      const maxCursor = this.sql.exec<{ max_ts: number }>(
+        "SELECT MAX(settlement_ts) AS max_ts FROM aemo_five_min_data;"
+      );
+      if (!maxCursor.length || !maxCursor[0].max_ts) {
+        // No data
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      const maxTs = maxCursor[0].max_ts;
+      let query = `
         SELECT settlement_ts, regionid, region, rrp, totaldemand, periodtype,
                netinterchange, scheduledgeneration, semischeduledgeneration, apcflag
         FROM aemo_five_min_data
-        WHERE settlement_ts >= ? AND settlement_ts <= ?
-              ${regionClause}
-        ORDER BY settlement_ts ASC
-        LIMIT 20000
-      `;
+        WHERE settlement_ts = ?`;
+      const values: (number | string)[] = [maxTs];
+      if (regionParam) {
+        query += " AND regionid = ?";
+        values.push(regionParam);
+      }
+      // Return all records with the max timestamp (latest) for the optional region
+      query += " ORDER BY regionid ASC LIMIT 20000";
       const rows = this.sql.exec<IntervalRecord>(query, ...values);
-
-      // Return as JSON
       return new Response(JSON.stringify(rows), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
     } catch (err) {
       this.log("ERROR", `handleRangeRequest error: ${String(err)}`);
+      return new Response(JSON.stringify({ error: String(err) }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
+
+  /**
+   * Helper to query from startMs .. endMs, optionally filtering by regionid. If `asc` is true,
+   * we order by settlement_ts ASC; otherwise ASC as well for consistency (or any approach).
+   */
+  private queryRange(
+    startMs: number,
+    endMs: number,
+    regionParam: string | null,
+    asc: boolean
+  ): Response {
+    try {
+      const regionClause = regionParam ? " AND regionid = ?" : "";
+      const values: (number | string)[] = [startMs, endMs];
+      if (regionParam) {
+        values.push(regionParam);
+      }
+      const orderBy = asc ? "ASC" : "ASC"; // Currently both are ASC for consistency
+      const query = `
+        SELECT settlement_ts, regionid, region, rrp, totaldemand, periodtype,
+               netinterchange, scheduledgeneration, semischeduledgeneration, apcflag
+        FROM aemo_five_min_data
+        WHERE settlement_ts >= ? AND settlement_ts <= ?
+              ${regionClause}
+        ORDER BY settlement_ts ${orderBy}
+        LIMIT 20000
+      `;
+      const rows = this.sql.exec<IntervalRecord>(query, ...values);
+      return new Response(JSON.stringify(rows), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    } catch (err) {
+      this.log("ERROR", `queryRange error: ${String(err)}`);
       return new Response(JSON.stringify({ error: String(err) }), {
         status: 500,
         headers: { "content-type": "application/json" },

@@ -12,15 +12,10 @@ triggers = { crons = ["1,6,11,16,21,26,31,36,41,46,51,56 * * * *"] }
 
 # Wrangler version 3 (v3) format for Durable Objects:
 [durable_objects]
-  bindings = [
-    { name = "AEMO_DATA", class_name = "AemoData" }
-  ]
+  bindings = []
 
-# Indicate how we store migrations for your Durable Object,
-# including an initial migration that sets up a new SQLite backend.
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["AemoData"]
+[durable_objects.external]
+  AEMO_DATA = { class_name = "AemoData", script_name = "aemo-api-worker" }
 
 [vars]
 AEMO_API_URL = "https://visualisations.aemo.com.au/aemo/apps/api/report/5MIN"
