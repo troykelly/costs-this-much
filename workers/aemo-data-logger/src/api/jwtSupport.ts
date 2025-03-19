@@ -6,8 +6,7 @@ import jwt from "jsonwebtoken";
 import { Env, KeyDefinition } from "./types";
 
 /**
- * createSigner signs a token with the given key for the given client ID,
- * attaching e.g. "exp" for expiry, "kid" for key ID, etc.
+ * Sign a JWT with RS256, using the given private key PEM. The keyid is set to the unique "kid".
  */
 export async function createSigner(
   privateKeyPem: string,
@@ -28,24 +27,19 @@ export async function createSigner(
 }
 
 /**
- * createVerifier: parse the JWT, use the matching public key
- * from the environment, verify signature, check exp, etc.
- *
- * If invalid, returns null. If valid, returns the decoded payload object.
+ * Verify an incoming token. If valid, return its decoded payload. If invalid, return null.
  */
 export async function createVerifier(
   token: string,
   env: Env,
   isRefresh: boolean
 ): Promise<Record<string, unknown> | null> {
-  // Decode header to find 'kid'
   const decodedHeader = decodeJwtHeader(token);
-  if (!decodedHeader || !decodedHeader.kid) {
+  if (!decodedHeader?.kid) {
     return null;
   }
 
-  const kidFromToken = decodedHeader.kid;
-  let keys: KeyDefinition[] = [];
+  let keys: KeyDefinition[];
   try {
     keys = JSON.parse(env.SIGNING_KEYS || "[]");
   } catch {
@@ -53,38 +47,36 @@ export async function createVerifier(
   }
 
   const now = Date.now();
-  // Find a key matching that kid, with current validity
+  // Find a matching key that is active
   const candidate = keys.find((k) => {
     const startTime = (k.start ?? 0) * 1000;
     const expireTime = (k.expire ?? 0) * 1000;
     return (
-      k.id === kidFromToken &&
+      k.id === decodedHeader.kid &&
       !k.revoked &&
       startTime <= now &&
       now < expireTime
     );
   });
+
   if (!candidate) {
     return null;
   }
 
   try {
-    // This checks signature and expiry automatically
     const verified = jwt.verify(token, candidate.public, {
       algorithms: ["RS256"],
     }) as Record<string, unknown>;
 
-    if (verified.isRefresh !== isRefresh) {
-      return null;
-    }
-    return verified;
+    // Check whether token's isRefresh matches what we expect
+    return verified.isRefresh === isRefresh ? verified : null;
   } catch {
     return null;
   }
 }
 
 /**
- * A quick way to decode a JWT header only, without verifying.
+ * Parse the token's header only (unverified) to get 'kid'. Null if malformed.
  */
 function decodeJwtHeader(token: string): { kid?: string } | null {
   const parts = token.split(".");

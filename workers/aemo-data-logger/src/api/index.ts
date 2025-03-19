@@ -11,17 +11,25 @@ import { createSigner, createVerifier } from "./jwtSupport";
 import { Env, KeyDefinition } from "./types";
 
 /**
- * Parses an RSA public key PEM (spki) to a JWK { n, e } using WebCrypto.
- * This removes the PEM headers/footers, Base64-decodes the result, and calls importKey/exportKey.
- *
- * Requires the Cloudflare Workers runtime or Node.js with the SubtleCrypto APIs.
+ * Parses the base64-encoded spki PEM from your environment's "public" field,
+ * which itself includes "-----BEGIN PUBLIC KEY-----" lines. We must decode from
+ * base64 → ASCII text (with headers), then strip headers & footers, then decode
+ * to binary for the WebCrypto importKey call.
+ * 
+ * This fixes the "double-encoded" scenario (because your .dev.vars stores a second
+ * base64 of the entire ASCII file).
  */
-async function parsePublicKeyToJwk(pem: string): Promise<{ n: string; e: string }> {
+async function parsePublicKeyToJwkFromB64(b64Pem: string): Promise<{ n: string; e: string }> {
+  // First, decode from base64 => ASCII text (which should include the PEM headers).
+  const asciiPem = atob(b64Pem);
+
+  // Now strip out the "-----BEGIN PUBLIC KEY-----" and "-----END PUBLIC KEY-----" lines,
+  // along with any newlines, leaving the raw base64 that SPKI expects.
+  let contents = asciiPem.trim();
+
   const pemHeader = "-----BEGIN PUBLIC KEY-----";
   const pemFooter = "-----END PUBLIC KEY-----";
-  let contents = pem.trim();
 
-  // Strip header/footer if present
   if (contents.startsWith(pemHeader)) {
     contents = contents.slice(pemHeader.length);
   }
@@ -32,7 +40,7 @@ async function parsePublicKeyToJwk(pem: string): Promise<{ n: string; e: string 
   // Remove whitespace/newlines
   contents = contents.replace(/[\r\n\s]/g, "");
 
-  // Decode from Base64 into binary
+  // Now decode that base64 → binary
   const rawBinary = Uint8Array.from(atob(contents), (c) => c.charCodeAt(0));
 
   // Import as spki
@@ -75,44 +83,39 @@ export default {
   },
 
   /**
-   * Return public JWKS info from SIGNING_KEYS. This helps clients verify tokens.
-   * Now fully parses each RSA public PEM to retrieve the actual n/e parameters.
+   * Return public JWKS info from SIGNING_KEYS. Now we decode each "public" field
+   * properly if it's been base64-encoded with the full "BEGIN PUBLIC KEY" text.
    */
   async handleJwks(env: Env): Promise<Response> {
     try {
       const keys: KeyDefinition[] = JSON.parse(env.SIGNING_KEYS || "[]");
       const now = Date.now();
-      const activeJwks = [];
+      const activePromises = [];
 
-      // Build a list of parsed JWK tasks, one per active key
       for (const k of keys) {
         if (k.revoked) {
           continue;
         }
-        // Interpret k.start and k.expire as Unix seconds
+        // Interpret k.start/k.expire as Unix seconds
         const startTime = (k.start ?? 0) * 1000;
         const endTime = (k.expire ?? 0) * 1000;
         if (startTime <= now && now < endTime) {
-          // We'll parse it below
-          activeJwks.push(k);
+          // We'll parse the "public" field as base64 => ASCII => spki => JWK
+          activePromises.push(
+            parsePublicKeyToJwkFromB64(k.public).then(({ n, e }) => ({
+              kty: "RSA",
+              alg: "RS256",
+              use: "sig",
+              kid: k.id,
+              n,
+              e,
+            }))
+          );
         }
       }
 
-      // Convert each active key's 'public' to a JWK { n, e }
-      const jwkPromises = activeJwks.map(async (keyDef) => {
-        const { n, e } = await parsePublicKeyToJwk(keyDef.public);
-        return {
-          kty: "RSA",
-          alg: "RS256",
-          use: "sig",
-          kid: keyDef.id,
-          n,
-          e,
-        };
-      });
-
-      const finalJwks = await Promise.all(jwkPromises);
-      return new Response(JSON.stringify({ keys: finalJwks }, null, 2), {
+      const jwks = await Promise.all(activePromises);
+      return new Response(JSON.stringify({ keys: jwks }, null, 2), {
         headers: { "content-type": "application/json" },
       });
     } catch (err) {
@@ -137,23 +140,21 @@ export default {
         return new Response("No active signing key", { status: 500 });
       }
 
-      const shortLivedToken = await createSigner(signingKey, kid, clientId, 15 * 60);
-      const refreshToken = await createSigner(signingKey, kid, clientId, 14 * 24 * 3600, true);
+      const shortLived = await createSigner(signingKey, kid, clientId, 15 * 60);
+      const refresh = await createSigner(signingKey, kid, clientId, 14 * 24 * 3600, true);
 
       return new Response(
         JSON.stringify(
           {
             token_type: "Bearer",
-            access_token: shortLivedToken,
+            access_token: shortLived,
             expires_in: 15 * 60,
-            refresh_token: refreshToken,
+            refresh_token: refresh,
           },
           null,
           2
         ),
-        {
-          headers: { "content-type": "application/json" },
-        }
+        { headers: { "content-type": "application/json" } }
       );
     } catch (err) {
       return new Response("Error: " + (err as Error).message, { status: 500 });
@@ -186,20 +187,18 @@ export default {
         return new Response("No active signing key", { status: 500 });
       }
 
-      const shortLivedToken = await createSigner(signingKey, kid, clientId as string, 15 * 60);
+      const shortLived = await createSigner(signingKey, kid, clientId as string, 15 * 60);
       return new Response(
         JSON.stringify(
           {
             token_type: "Bearer",
-            access_token: shortLivedToken,
+            access_token: shortLived,
             expires_in: 15 * 60,
           },
           null,
           2
         ),
-        {
-          headers: { "content-type": "application/json" },
-        }
+        { headers: { "content-type": "application/json" } }
       );
     } catch (err) {
       return new Response("Error: " + (err as Error).message, { status: 500 });
@@ -207,13 +206,10 @@ export default {
   },
 
   /**
-   * Retrieve data from the AemoData DO, defaulting to a recent window or
-   * letting the user pass lastSec=..., or start=..., end=..., regionid=...
-   * Must have a valid short-lived token (Bearer).
+   * Retrieve data from the AemoData DO, must have a valid short-lived token (Bearer).
    */
   async handleDataRequest(request: Request, env: Env): Promise<Response> {
     try {
-      // parse Authorization header
       const authHeader = request.headers.get("authorization") || "";
       const match = authHeader.match(/^Bearer (.+)$/);
       if (!match) {
@@ -225,7 +221,6 @@ export default {
         return new Response("Invalid or expired access token", { status: 401 });
       }
 
-      // forward query parameters to AemoData DO
       const url = new URL(request.url);
       const qs = url.searchParams.toString();
       const id = env.AEMO_DATA.idFromName("AEMO_LOGGER");
@@ -265,11 +260,9 @@ function isValidClientId(clientId: string | undefined, env: Env): boolean {
   const raw = env.CLIENT_IDS || "";
   try {
     if (raw.trim().startsWith("[")) {
-      // parse as array
       const arr = JSON.parse(raw) as string[];
       return arr.includes(clientId);
     } else {
-      // single string
       return clientId === raw.trim();
     }
   } catch {
@@ -278,8 +271,8 @@ function isValidClientId(clientId: string | undefined, env: Env): boolean {
 }
 
 /**
- * Finds a key in env.SIGNING_KEYS that is active (using start/expire as epoch),
- * and returns the latest one (the one with the newest start).
+ * Finds a key in env.SIGNING_KEYS that is active (using start/expire as Unix seconds),
+ * returning the one with the newest .start.
  */
 function findCurrentSigningKey(
   env: Env
@@ -308,13 +301,11 @@ function findCurrentSigningKey(
     }
   }
   if (!best) return {};
-  // Use best.id for the kid
   return { signingKey: best.private, kid: best.id };
 }
 
 /**
- * Calls the API_ABUSE DO to see if this request is within the allowed rate limit.
- * Returns { allowed: false } if the limit is exceeded, or { allowed: true } if ok.
+ * Checks if the request is within rate limits. If not, returns {allowed: false}.
  */
 async function checkRateLimit(
   request: Request,
@@ -325,30 +316,22 @@ async function checkRateLimit(
   const asn = request.headers.get("CF-ISP") || request.headers.get("cf-asn") || "UNKNOWN";
   const sessionId = getOrCreateSessionId(request);
 
-  // forward to DO
   const id = env.API_ABUSE.idFromName("API_ABUSE_OBJECT");
   const stub = env.API_ABUSE.get(id);
 
   const resp = await stub.fetch("https://dummy-url/checkRate", {
     method: "POST",
-    body: JSON.stringify({
-      ip,
-      asn,
-      session_id: sessionId,
-      nowMs,
-    }),
+    body: JSON.stringify({ ip, asn, session_id: sessionId, nowMs }),
     headers: { "content-type": "application/json" },
   });
   if (!resp.ok) {
     return { allowed: false };
   }
-  const data = await resp.json<{ allowed: boolean }>();
-  return data;
+  return resp.json<{ allowed: boolean }>();
 }
 
 /**
- * Simple utility to identify the user's session. This might be replaced with
- * a real session store. For now, we read "sessionId" from cookies or return "no-session".
+ * Rudimentary session ID. For a real app, store/issue session IDs properly.
  */
 function getOrCreateSessionId(request: Request): string {
   const cookie = request.headers.get("cookie") || "";
@@ -359,8 +342,6 @@ function getOrCreateSessionId(request: Request): string {
   return "no-session";
 }
 
-// ------------------
-// Export DO classes so Wrangler sees them in this entry file
-// ------------------
+// Re-export DOs for Wrangler
 export { AemoData } from "../AemoDataDurableObject";
 export { ApiAbuse } from "./ApiAbuseDurableObject";
