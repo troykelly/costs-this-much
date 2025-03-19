@@ -1,21 +1,20 @@
 /**
  * @fileoverview Durable Object that stores AEMO intervals in a Cloudflare SQL-based backend.
  *
- * This version parses the AEMO-supplied settlement date exactly as provided, without forcibly
- * appending any timezone offsets. By default, Date.parse() treats a string like
- * "2025-03-16T18:05:00" as UTC if no timezone is specified. If your input is actually local
- * Australian Eastern Time, you may need to explicitly append "+10:00" or handle DST logic.
+ * The AEMO data is fixed to Australia/Brisbane time (UTC+10). By default, Date.parse() will
+ * treat ISO-like strings (e.g. "2025-03-16T18:05:00") as UTC. Hence, if the data is provided
+ * without a timezone, we must append "+10:00" manually so the epoch values will be consistent
+ * between runs. Otherwise, the same intervals could re-insert each time if they are parsed
+ * differently across invocations.
  *
- * --------------------------------------------------------------------------
- * This Durable Object now implements the requested steps:
- *  1. Attempt to download the AEMO data - logging failure and giving up if unavailable.
- *  2. Check the AEMO data for the oldest and most recent values (for all regions) – if no data, log the failure and give up.
+ * This script implements:
+ *  1. Attempt to download the AEMO data - logging failure and giving up in a failure case.
+ *  2. Check the AEMO data for the oldest and most recent values (for all regions); if there is no data, log the failure and give up.
  *  3. Generate a list of unique regions included in the AEMO data.
  *  4. Output the date range and list of regions to the debug log.
  *  5. Check the database for missing data in the available AEMO data range for the available regions.
  *  6. Output the list of missing intervals in the database to the debug log.
  *  7. Insert any missing records in the database.
- * --------------------------------------------------------------------------
  */
 
 import type {
@@ -103,7 +102,7 @@ export interface AemoApiResponse {
 
 /**
  * Durable Object that fetches AEMO data and stores intervals in a SQLite table named "aemo_five_min_data".
- * Implements the 7-step process described in the user's request.
+ * Applies a forced UTC+10 offset for Australia/Brisbane to avoid re-inserting the same data.
  */
 export class AemoData implements DurableObject {
   private readonly sql: SqlStorage;
@@ -120,7 +119,7 @@ export class AemoData implements DurableObject {
     const configuredLevel = env.LOG_LEVEL ?? "WARN";
     this.logLevel = getLogPriority(configuredLevel);
 
-    // Create table if it does not exist
+    // Create table if not existing
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS aemo_five_min_data (
           settlement_ts             INTEGER NOT NULL,
@@ -145,7 +144,7 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Main fetch handler. Specifically handles POST /sync to run the data ingestion.
+   * Main fetch handler. For this DO, we specifically handle POST /sync to run the data ingestion.
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -212,7 +211,7 @@ export class AemoData implements DurableObject {
       return new Response(msg, { status: 500 });
     }
 
-    // Build an array of intervals from the raw records
+    // Convert each raw record into an AemoInterval (with forced UTC+10 offset).
     const intervals = data["5MIN"]
       .map((item) => this.recordToInterval(item))
       .filter((rec) => rec !== null) as AemoInterval[];
@@ -220,7 +219,6 @@ export class AemoData implements DurableObject {
     if (!intervals.length) {
       const msg = "No intervals parsed from AEMO data.";
       this.log("WARNING", msg);
-      // "Give up" - no data to process
       return new Response(msg, { status: 200 });
     }
 
@@ -241,21 +239,21 @@ export class AemoData implements DurableObject {
     // 3) Identify unique regions
     const regionIds = [...new Set(intervals.map((i) => i.regionid))];
 
-    // 4) Output date range & region list
+    // 4) Output date range & region list to debug log
     this.log(
       "DEBUG",
-      `Earliest settlement time: ${earliest}, latest: ${latest}, regions: ${JSON.stringify(regionIds)}`
+      `Earliest settlement: ${earliest}, latest: ${latest}, regions: ${JSON.stringify(regionIds)}`
     );
 
     if (!regionIds.length) {
-      const msg = "No region IDs found in AEMO data. Aborting.";
+      const msg = "No region IDs in AEMO data. Aborting.";
       this.log("WARNING", msg);
       return new Response(msg, { status: 200 });
     }
 
     this.log("INFO", "Step 5: Checking the DB to see which intervals already exist...");
 
-    // Build placeholders for region filter
+    // Query for existing records in that date range for these regions
     const placeholders = regionIds.map(() => '?').join(', ');
     const selectSql = `
       SELECT settlement_ts, regionid
@@ -270,8 +268,8 @@ export class AemoData implements DurableObject {
       ...regionIds
     );
 
-    // Create a set of existing intervals in the DB
-    const existingIntervalsSet = new Set<string>();
+    // Build a set of existing intervals
+    const existingIntervals = new Set<string>();
     if (
       existingCursor.results &&
       existingCursor.results[0] &&
@@ -279,36 +277,30 @@ export class AemoData implements DurableObject {
     ) {
       for (const row of existingCursor.results[0].rows) {
         const key = `${row.settlement_ts}-${row.regionid}`;
-        existingIntervalsSet.add(key);
+        existingIntervals.add(key);
       }
     }
     this.log(
       "DEBUG",
-      `Found ${existingIntervalsSet.size} existing records in this time & region range.`
+      `Found ${existingIntervals.size} existing records in the chosen time/region range.`
     );
 
     this.log("INFO", "Step 6: Determining which intervals are missing...");
     const missingIntervals: AemoInterval[] = [];
-    for (const interval of intervals) {
-      const key = `${interval.settlement_ts}-${interval.regionid}`;
-      if (!existingIntervalsSet.has(key)) {
-        missingIntervals.push(interval);
+    for (const iv of intervals) {
+      const key = `${iv.settlement_ts}-${iv.regionid}`;
+      if (!existingIntervals.has(key)) {
+        missingIntervals.push(iv);
       }
     }
-
-    // Output the missing intervals to the debug log
     this.log(
       "DEBUG",
-      `Missing intervals (${missingIntervals.length}): ${JSON.stringify(
-        missingIntervals
-      )}`
+      `Missing intervals (${missingIntervals.length}): ${JSON.stringify(missingIntervals)}`
     );
 
-    this.log("INFO", "Step 7: Inserting missing records into the database...");
+    this.log("INFO", "Step 7: Inserting missing records...");
     let insertedCount = 0;
     for (const interval of missingIntervals) {
-      // We already know they're missing, so theoretically we could do a direct INSERT without conflict check.
-      // But we'll keep this pattern consistent in case of concurrency or edge scenarios.
       const cursor = this.sql.exec<IntervalRecord>(
         `
           INSERT INTO aemo_five_min_data (
@@ -336,7 +328,7 @@ export class AemoData implements DurableObject {
         `,
         interval.settlement_ts,
         interval.regionid,
-        interval.regionid, // For demonstration, we store regionid as "region" if there's no separate name
+        interval.regionid,
         interval.rrp,
         interval.totaldemand,
         interval.periodtype,
@@ -354,32 +346,34 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Convert the raw record from AEMO into an AemoInterval. Returns null if parse fails.
+   * Convert the raw record from AEMO into an AemoInterval.
+   * Returns null if parse fails.
+   * Forces an Australia/Brisbane offset (+10:00) if the string doesn't already have a timezone.
    */
   private recordToInterval(item: AemoApiResponse["5MIN"][number]): AemoInterval | null {
-    const settlementTs = this.parseLocalDate(item.SETTLEMENTDATE);
+    const settlementTs = this.parseLocalBrisbaneDate(item.SETTLEMENTDATE);
     if (Number.isNaN(settlementTs)) {
       this.log("ERROR", `Invalid date parse: "${item.SETTLEMENTDATE}" => NaN.`);
       return null;
     }
 
-    // Convert numeric fields safely
     return {
       settlementdate: item.SETTLEMENTDATE,
       settlement_ts: settlementTs,
       regionid: item.REGIONID,
       rrp: parseFloat(String(item.RRP)),
-      totaldemand:
-        item.TOTALDEMAND !== undefined ? parseFloat(String(item.TOTALDEMAND)) : null,
+      totaldemand: item.TOTALDEMAND !== undefined
+        ? parseFloat(String(item.TOTALDEMAND))
+        : null,
       periodtype: item.PERIODTYPE !== undefined ? String(item.PERIODTYPE) : null,
-      netinterchange:
-        item.NETINTERCHANGE !== undefined ? parseFloat(String(item.NETINTERCHANGE)) : null,
-      scheduledgeneration:
-        item.SCHEDULEDGENERATION !== undefined
-          ? parseFloat(String(item.SCHEDULEDGENERATION))
-          : null,
+      netinterchange: item.NETINTERCHANGE !== undefined
+        ? parseFloat(String(item.NETINTERCHANGE))
+        : null,
+      scheduledgeneration: item.SCHEDULEDGENERATION !== undefined
+        ? parseFloat(String(item.SCHEDULEDGENERATION))
+        : null,
       semischeduledgeneration: (() => {
-        // Attempt to handle variations in the naming
+        // Attempt to handle naming variations
         if (item.SEMISCHEduledGENERATION !== undefined) {
           return parseFloat(String(item.SEMISCHEduledGENERATION));
         }
@@ -391,20 +385,29 @@ export class AemoData implements DurableObject {
         }
         return null;
       })(),
-      apcflag:
-        item.APCFLAG !== undefined ? parseFloat(String(item.APCFLAG)) : null
+      apcflag: item.APCFLAG !== undefined
+        ? parseFloat(String(item.APCFLAG))
+        : null
     };
   }
 
   /**
-   * Directly parses the date string as local time.
-   * For example, "2025-03-16T18:00:00" => new Date(...) => epoch seconds.
+   * Parse the input as if it is in Australia/Brisbane time (UTC+10).
+   * If no timezone offset is present, we append "+10:00".
    */
-  private parseLocalDate(dateStr: string): number {
-    this.log("DEBUG", `parseLocalDate: "${dateStr}"`);
-    const ms = Date.parse(dateStr);
+  private parseLocalBrisbaneDate(dateStr: string): number {
+    const hasOffsetRegex = /[Zz]|([\+\-]\d{2}:?\d{2})$/;
+    let adjustedStr = dateStr;
+
+    // If the date string doesn't already specify an offset or Z, append +10:00
+    if (!hasOffsetRegex.test(dateStr)) {
+      adjustedStr += "+10:00";
+    }
+
+    this.log("DEBUG", `parseLocalBrisbaneDate: Original="${dateStr}", Adjusted="${adjustedStr}"`);
+    const ms = Date.parse(adjustedStr);
     if (Number.isNaN(ms)) {
-      this.log("ERROR", `Failed to parse date string: "${dateStr}"`);
+      this.log("ERROR", `Failed to parse date string (Brisbane offset): "${adjustedStr}"`);
       return NaN;
     }
     return Math.floor(ms / 1000);
@@ -422,7 +425,7 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Basic logger that respects the configured log threshold.
+   * Logging helper, respects the configured log threshold.
    */
   private log(level: LogLevel, message: string): void {
     if (getLogPriority(level) >= this.logLevel) {
