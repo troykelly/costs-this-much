@@ -120,7 +120,7 @@ export class AemoData implements DurableObject {
 
   /**
    * Constructs the DO, assigning Cloudflare’s SQL storage to "this.sql" and
-   * creating the "aemo_five_min_data" table if it doesn’t exist.
+   * conditionally creating the "aemo_five_min_data" table if it doesn't exist.
    */
   constructor(private readonly state: DurableObjectState, env: AemoDataEnv) {
     this.sql = state.storage.sql;
@@ -128,9 +128,14 @@ export class AemoData implements DurableObject {
     const configuredLevel = env.LOG_LEVEL ?? "WARN";
     this.logLevel = getLogPriority(configuredLevel);
 
-    // Create table if not existing
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS aemo_five_min_data (
+    // Attempt a small query to check table existence; if it fails, create the table and indexes.
+    try {
+      this.sql.exec("SELECT 1 FROM aemo_five_min_data LIMIT 1;");
+      this.log("DEBUG", "Table aemo_five_min_data exists. Skipping creation.");
+    } catch (err) {
+      this.log("INFO", `Creating table and indexes aemo_five_min_data - reason: ${String(err)}`);
+      this.sql.exec(`
+        CREATE TABLE aemo_five_min_data (
           settlement_ts             INTEGER NOT NULL,
           regionid                  TEXT    NOT NULL,
           region                    TEXT,
@@ -142,12 +147,13 @@ export class AemoData implements DurableObject {
           semischeduledgeneration  REAL,
           apcflag                  REAL,
           PRIMARY KEY (settlement_ts, regionid)
-      );
-      CREATE INDEX IF NOT EXISTS idx_aemo_five_min_data_regionid_ts
+        );
+        CREATE INDEX idx_aemo_five_min_data_regionid_ts
           ON aemo_five_min_data (regionid, settlement_ts);
-      CREATE INDEX IF NOT EXISTS idx_aemo_five_min_data_ts
+        CREATE INDEX idx_aemo_five_min_data_ts
           ON aemo_five_min_data (settlement_ts);
-    `);
+      `);
+    }
 
     this.log("INFO", `AemoData DO constructed with LOG_LEVEL="${configuredLevel}".`);
   }
@@ -259,63 +265,7 @@ export class AemoData implements DurableObject {
       return new Response(msg, { status: 200 });
     }
 
-    // Step 5 debug code (Google TypeScript style: two-space indent).
     this.log("INFO", "Step 5: Checking the DB for existing records...");
-
-    // // 1) Check how many rows are in the table.
-    // {
-    //   const countQuery = `
-    //     SELECT COUNT(*) AS count
-    //     FROM aemo_five_min_data
-    //   `;
-    //   // "countCursor" will yield row objects with a "count" property.
-    //   const countCursor = this.sql.exec<{ count: number }>(countQuery);
-    //   let totalRows = 0;
-
-    //   // Iterate over the returned cursor to capture the count.
-    //   for (const row of countCursor) {
-    //     totalRows = row.count;
-    //   }
-
-    //   this.log("DEBUG", `Total rows in aemo_five_min_data: ${totalRows}`);
-    // }
-
-    // // 2) Check the min and max settlement_ts in the table.
-    // {
-    //   const minMaxQuery = `
-    //     SELECT MIN(settlement_ts) AS min_ts,
-    //           MAX(settlement_ts) AS max_ts
-    //     FROM aemo_five_min_data
-    //   `;
-    //   // "minMaxCursor" will yield row objects with "min_ts" and "max_ts" properties.
-    //   const minMaxCursor = this.sql.exec<{ min_ts: number; max_ts: number }>(minMaxQuery);
-
-    //   for (const row of minMaxCursor) {
-    //     this.log("DEBUG", `Min: ${row.min_ts}, Max: ${row.max_ts}`);
-    //   }
-    // }
-
-    // // 3) Query a known row that we expect to exist.
-    // {
-    //   const knownRowQuery = `
-    //     SELECT settlement_ts, regionid
-    //     FROM aemo_five_min_data
-    //     WHERE settlement_ts = 1742177700000
-    //       AND regionid = 'NSW1'
-    //   `;
-    //   // "knownCursor" should yield row objects with "settlement_ts" and "regionid" properties.
-    //   const knownCursor = this.sql.exec<{ settlement_ts: number; regionid: string }>(knownRowQuery);
-    //   let foundKnown = false;
-
-    //   // If we see any row, we know the data is present.
-    //   for (const row of knownCursor) {
-    //     foundKnown = true;
-    //     this.log("DEBUG", `Found known row in DB: ${JSON.stringify(row)}`);
-    //   }
-    //   if (!foundKnown) {
-    //     this.log("DEBUG", "Known row (1742177700000, NSW1) was NOT found in the current DB.");
-    //   }
-    // }
 
     // 4) Run the actual query to find existing records in the chosen range.
     const placeholders: string = regionIds.map(() => "?").join(", ");
@@ -325,10 +275,7 @@ export class AemoData implements DurableObject {
       WHERE settlement_ts >= ? AND settlement_ts <= ?
         AND regionid IN (${placeholders})
     `;
-    // this.log("DEBUG", selectSql);
-    // this.log("DEBUG", JSON.stringify({ earliest, latest, regionIds }));
 
-    // "existingCursor" yields IntervalRecord objects for all matching rows.
     const existingCursor = this.sql.exec<IntervalRecord>(
       selectSql,
       earliest,
@@ -369,7 +316,6 @@ export class AemoData implements DurableObject {
       "DEBUG",
       `Missing intervals (${missingIntervals.length}): ${JSON.stringify(missingIntervals)}`
     );
-
 
     this.log("INFO", "Step 7: Insert missing records...");
     let insertedCount = 0;
