@@ -61,6 +61,21 @@ async function parsePublicKeyToJwkFromB64(b64Pem: string): Promise<{ n: string; 
 }
 
 export default {
+  /**
+   * Invoked by Cloudflare’s scheduler as configured in wrangler.*.toml (e.g. every 5min).
+   * Triggers the DO's /sync route to fetch and insert intervals.
+   */
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const logLevel = env.LOG_LEVEL ?? 'WARN';
+    if (getLogPriority(logLevel) <= getLogPriority('INFO')) {
+      console.log(`[INFO] Scheduled event triggered. Invoking DO sync with LOG_LEVEL="${logLevel}".`);
+    }
+
+    const id = env.AEMO_DATA.idFromName('AEMO_LOGGER');
+    const stub = env.AEMO_DATA.get(id);
+    await stub.fetch('https://dummy-url/sync', { method: 'POST' });
+  },
+
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     // First, enforce rate limit
     const rateLimitResult = await checkRateLimit(request, env);
@@ -340,6 +355,18 @@ function getOrCreateSessionId(request: Request): string {
     return match[1];
   }
   return "no-session";
+}
+
+
+/** Helper to convert log level strings to numeric priority. */
+function getLogPriority(level: string): number {
+  switch (level.toUpperCase()) {
+    case 'DEBUG': return 1;
+    case 'INFO':  return 2;
+    case 'WARN':  return 3;
+    case 'ERROR': return 4;
+    default:      return 99; // 'NONE' or unknown
+  }
 }
 
 // Re-export DOs for Wrangler

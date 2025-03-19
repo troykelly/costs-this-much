@@ -17,8 +17,12 @@ workers_dev = true
 tag = "v1"
 new_sqlite_classes = ["AemoData", "ApiAbuse"]
 
+triggers = { crons = ["1,6,11,16,21,26,31,36,41,46,51,56 * * * *"] }
+
 [vars]
 LOG_LEVEL = "DEBUG"
+AEMO_API_URL = "https://visualisations.aemo.com.au/aemo/apps/api/report/5MIN"
+AEMO_API_HEADERS = '{ "Accept": "application/json" }'
 # The following environment variables must be set as real secrets in production:
 # CLIENT_IDS='["some-uuid-string","another-uuid-string"]'
 # SIGNING_KEYS='[{"private":"---BEGIN PRIVATE KEY---","public":"---BEGIN PUBLIC KEY---","start":"2025-01-01T00:00:00Z","end":"2026-01-01T00:00:00Z"}]'

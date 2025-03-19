@@ -460,6 +460,7 @@ export class AemoData implements DurableObject {
         ORDER BY settlement_ts ${orderBy}
         LIMIT 20000
       `;
+      this.log("DEBUG", JSON.stringify({query, values}));
       const rows = this.sql.exec<IntervalRecord>(query, ...values);
       return new Response(JSON.stringify(rows), {
         status: 200,
