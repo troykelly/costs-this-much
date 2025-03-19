@@ -98,8 +98,9 @@ export interface AemoApiResponse {
     PERIODTYPE?: string;
     NETINTERCHANGE?: string | number;
     SCHEDULEDGENERATION?: string | number;
-    SEMISCHEduledGENERATION?: string | number;
     SEMISCHEduledGENERATION?: string | number;   // Potential duplicates/typos
+    SEMISCHEduledGENERATION?: string | number;
+    SEMISCHEduledGENERATION?: string | number;
     SEMISCHEcheduledGENERATION?: string | number;
     SEMISCHECHEDULEDGENERATION?: string | number;
     APCFLAG?: string | number;
@@ -158,9 +159,43 @@ export class AemoData implements DurableObject {
 
   /**
    * Adds debug logs about table existence, row counts, first & last record.
+   * Also inserts a dummy row on each call.
    */
   private debugTableStatus(): void {
     try {
+      // Insert a dummy row each time this debug function is called.
+      const nowMs = Date.now();
+      this.sql.exec(
+        `
+        INSERT INTO aemo_five_min_data (
+          settlement_ts,
+          regionid,
+          region,
+          rrp,
+          totaldemand,
+          periodtype,
+          netinterchange,
+          scheduledgeneration,
+          semischeduledgeneration,
+          apcflag
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (settlement_ts, regionid)
+        DO NOTHING
+        `,
+        nowMs,
+        "DEBUG_ENTRY",
+        "DEBUG_REGION",
+        0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      );
+      this.log("DEBUG", `debugTableStatus: Inserted dummy row at ts=${nowMs}`);
+
       // Count total rows
       const countQuery = `SELECT COUNT(*) AS total_count FROM aemo_five_min_data;`;
       const countResult = this.sql.exec<{ total_count: number }>(countQuery);
@@ -687,9 +722,43 @@ export class AemoData implements DurableObject {
 
   /**
    * debugMinMax => logs min, max, and total count from the entire table.
+   * Also inserts a dummy row on each call.
    */
   private debugMinMax(): void {
     try {
+      // Insert a dummy row each time this debug function is called.
+      const nowMs = Date.now();
+      this.sql.exec(
+        `
+        INSERT INTO aemo_five_min_data (
+          settlement_ts,
+          regionid,
+          region,
+          rrp,
+          totaldemand,
+          periodtype,
+          netinterchange,
+          scheduledgeneration,
+          semischeduledgeneration,
+          apcflag
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (settlement_ts, regionid)
+        DO NOTHING
+        `,
+        nowMs,
+        "DEBUG_ENTRY",
+        "DEBUG_REGION",
+        0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      );
+      this.log("DEBUG", `debugMinMax: Inserted dummy row at ts=${nowMs}`);
+
       const boundaryRows = this.sql.exec<{
         min_ts: number | null;
         max_ts: number | null;
