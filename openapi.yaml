@@ -5,7 +5,7 @@ info:
     This OpenAPI document describes the AEMO Data Logger & API Worker endpoints
     for handling token issuance, token refresh, data retrieval, and public JWKS
     access for verifying RSA-signed tokens.
-  version: "1.0.0"
+  version: "1.0.1"
 
 servers:
   - url: "https://api.coststhismuch.au"
@@ -136,26 +136,31 @@ paths:
   /data:
     get:
       operationId: getData
-      summary: Retrieves 5-minute intervals from the Durable Object store.
-      description: >
-        Requires a valid short-lived Bearer token. Clients can optionally provide
-        query parameters such as start, end, lastSec, or regionid to filter data.
+      summary: Retrieves 5-minute intervals from the shared DO store (SQL-based).
+      description: |
+        Requires a valid short-lived Bearer token.  
+        If no query parameters are supplied, returns the most recent results in descending order.  
+        Supports optional paging with "limit" and "offset".  
+        Additional query parameters allow for date ranges or region filtering:
+        • start / end (milliseconds UTC) for explicit range (ordered ascending).  
+        • lastSec to retrieve data from (nowMs - lastSec) to now, in descending order.  
+        • regionid filters by a specific region.  
       parameters:
         - name: start
           in: query
-          description: Start timestamp in milliseconds (UTC).
+          description: Start timestamp in milliseconds (UTC) (must be used with end).
           required: false
           schema:
             type: integer
         - name: end
           in: query
-          description: End timestamp in milliseconds (UTC).
+          description: End timestamp in milliseconds (UTC) (must be used with start).
           required: false
           schema:
             type: integer
         - name: lastSec
           in: query
-          description: Number of seconds from the current time to look back.
+          description: Number of seconds from the current time to look back (overrides start/end).
           required: false
           schema:
             type: integer
@@ -165,11 +170,23 @@ paths:
           required: false
           schema:
             type: string
+        - name: limit
+          in: query
+          description: Maximum number of records to return (for paging).
+          required: false
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          description: Offset for paging.
+          required: false
+          schema:
+            type: integer
       security:
         - bearerAuth: []
       responses:
         '200':
-          description: An array of intervals matching the query parameters.
+          description: An array of intervals matching the query parameters (or latest data if none provided).
           content:
             application/json:
               schema:
@@ -199,6 +216,8 @@ paths:
                   apcflag: 0
         '401':
           description: The bearer token is missing or invalid.
+        '400':
+          description: Invalid query parameters specified.
         '500':
           description: Error retrieving data from the Durable Object.
 

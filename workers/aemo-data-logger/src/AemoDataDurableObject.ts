@@ -6,11 +6,11 @@
  *
  * This version includes endpoints for data retrieval:
  *   - POST /sync: used by the scheduled data logger to ingest intervals.
- *   - GET /range: retrieve intervals with optional filters.
+ *   - GET /range: retrieve intervals with optional filters and paging.
  *
- * Updated to support paging (limit & offset parameters) and ensure we return
- * recent records in descending timestamp order when no query parameters are
- * provided. Additional debug logging and documentation added for troubleshooting.
+ * Updated to include more detailed debug logging and to ensure data is returned
+ * for the "/data" query with no parameters, which should display recent records
+ * in descending order. If no data is found, additional logs will help diagnose.
  */
 
 import type {
@@ -89,6 +89,7 @@ export interface AemoApiResponse {
     NETINTERCHANGE?: string | number;
     SCHEDULEDGENERATION?: string | number;
     SEMISCHEduledGENERATION?: string | number;
+    SEMISCHEduledGENERATION?: string | number;
     SEMISCHEcheduledGENERATION?: string | number;
     SEMISCHECHEDULEDGENERATION?: string | number;
     APCFLAG?: string | number;
@@ -108,8 +109,9 @@ export class AemoData implements DurableObject {
 
     // Check table existence; create if needed
     try {
+      this.log("DEBUG", "Attempting to verify existence of aemo_five_min_data table.");
       this.sql.exec("SELECT 1 FROM aemo_five_min_data LIMIT 1;");
-      this.log("DEBUG", "Table aemo_five_min_data exists. Skipping creation.");
+      this.log("DEBUG", "Table aemo_five_min_data found. Skipping creation step.");
     } catch (err) {
       this.log("INFO", `Creating table and indexes aemo_five_min_data - reason: ${String(err)}`);
       this.sql.exec(`
@@ -143,6 +145,7 @@ export class AemoData implements DurableObject {
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    this.log("DEBUG", `fetch called with method=${request.method}, pathname=${url.pathname}`);
 
     if (request.method === "POST" && url.pathname === "/sync") {
       return this.handleSync();
@@ -150,6 +153,7 @@ export class AemoData implements DurableObject {
       return this.handleRangeRequest(url);
     }
 
+    this.log("DEBUG", "No matching route found in AemoDataDurableObject.");
     return new Response("Not Found", { status: 404 });
   }
 
@@ -158,12 +162,12 @@ export class AemoData implements DurableObject {
    * fetch from AEMO and store missing intervals.
    */
   private async handleSync(): Promise<Response> {
-    this.log("INFO", "Step 1: Attempting to download AEMO data...");
+    this.log("INFO", "handleSync: Step 1: Attempting to download AEMO data...");
 
     const requestBody = { timeScale: ["5MIN"] };
     const headers = this.parseHeaders(this.env.AEMO_API_HEADERS);
-    this.log("DEBUG", `Request headers: ${JSON.stringify(headers)}`);
-    this.log("DEBUG", `Request body: ${JSON.stringify(requestBody)}`);
+    this.log("DEBUG", `handleSync: Request headers: ${JSON.stringify(headers)}`);
+    this.log("DEBUG", `handleSync: Request body: ${JSON.stringify(requestBody)}`);
 
     let resp: Response;
     try {
@@ -176,40 +180,40 @@ export class AemoData implements DurableObject {
         body: JSON.stringify(requestBody),
       });
     } catch (err) {
-      const msg = `AEMO API fetch failed: ${(err as Error).message}`;
+      const msg = `handleSync: AEMO API fetch failed: ${(err as Error).message}`;
       this.log("ERROR", msg);
       return new Response(msg, { status: 500 });
     }
     if (!resp.ok) {
       const errText = await resp.text();
-      const msg = `AEMO API error ${resp.status}: ${errText}`;
+      const msg = `handleSync: AEMO API error ${resp.status}: ${errText}`;
       this.log("WARN", msg);
       return new Response(msg, { status: 500 });
     }
 
-    this.log("INFO", "Step 2: Checking the AEMO data for earliest and latest intervals...");
+    this.log("INFO", "handleSync: Step 2: Checking the AEMO data for earliest and latest intervals...");
     let data: AemoApiResponse;
     try {
       data = (await resp.json()) as AemoApiResponse;
     } catch (err) {
-      const msg = `Invalid JSON in AEMO response: ${(err as Error).message}`;
+      const msg = `handleSync: Invalid JSON in AEMO response: ${(err as Error).message}`;
       this.log("ERROR", msg);
       return new Response(msg, { status: 500 });
     }
 
     if (!Array.isArray(data["5MIN"])) {
-      const msg = `Missing or invalid "5MIN" array in AEMO data.`;
+      const msg = `handleSync: Missing or invalid "5MIN" array in AEMO data.`;
       this.log("WARN", msg);
       return new Response(msg, { status: 500 });
     }
 
-    this.log("INFO", "Parsing intervals (forcing Brisbane offset if needed)...");
+    this.log("INFO", "handleSync: Parsing intervals (forcing Brisbane offset if needed)...");
     const intervals = data["5MIN"]
       .map((item) => this.recordToInterval(item))
       .filter((rec) => rec !== null) as AemoInterval[];
 
     if (!intervals.length) {
-      const msg = "No intervals parsed from AEMO data. Giving up.";
+      const msg = "handleSync: No intervals parsed from AEMO data. Giving up.";
       this.log("WARN", msg);
       return new Response(msg, { status: 200 });
     }
@@ -222,7 +226,7 @@ export class AemoData implements DurableObject {
     }
 
     if (Number.isNaN(earliest) || Number.isNaN(latest)) {
-      const msg = "One or more settlement_ts values were NaN. Aborting.";
+      const msg = "handleSync: One or more settlement_ts values were NaN. Aborting.";
       this.log("ERROR", msg);
       return new Response(msg, { status: 500 });
     }
@@ -230,16 +234,16 @@ export class AemoData implements DurableObject {
     const regionIds = [...new Set(intervals.map((i) => i.regionid))];
     this.log(
       "DEBUG",
-      `Earliest (ms): ${earliest}, latest (ms): ${latest}, Regions: ${JSON.stringify(regionIds)}`
+      `handleSync: Earliest (ms): ${earliest}, latest (ms): ${latest}, Regions: ${JSON.stringify(regionIds)}`
     );
 
     if (!regionIds.length) {
-      const msg = "No region IDs found in AEMO data. Aborting.";
+      const msg = "handleSync: No region IDs found in AEMO data. Aborting.";
       this.log("WARN", msg);
       return new Response(msg, { status: 200 });
     }
 
-    this.log("INFO", "Step 5: Checking the DB for existing records...");
+    this.log("INFO", "handleSync: Step 5: Checking the DB for existing records...");
     const placeholders: string = regionIds.map(() => "?").join(", ");
     const selectSql = `
       SELECT settlement_ts, regionid
@@ -247,6 +251,7 @@ export class AemoData implements DurableObject {
       WHERE settlement_ts >= ? AND settlement_ts <= ?
         AND regionid IN (${placeholders})
     `;
+    this.log("DEBUG", `handleSync: Checking existing records with query=${selectSql}`);
     const existingCursor = this.sql.exec<IntervalRecord>(
       selectSql,
       earliest,
@@ -256,15 +261,16 @@ export class AemoData implements DurableObject {
 
     const existingKeys: Set<string> = new Set();
     for (const row of existingCursor) {
-      existingKeys.add(`${row.settlement_ts}-${row.regionid}`);
+      const combo = `${row.settlement_ts}-${row.regionid}`;
+      existingKeys.add(combo);
     }
 
     this.log(
       "DEBUG",
-      `Found ${existingKeys.size} unique records in the chosen ms-range & region set.`
+      `handleSync: Found ${existingKeys.size} unique records in the chosen ms-range & region set.`
     );
 
-    this.log("INFO", "Step 6: Figure out missing intervals...");
+    this.log("INFO", "handleSync: Step 6: Figure out missing intervals...");
     const missingIntervals: AemoInterval[] = [];
     for (const iv of intervals) {
       const key: string = `${iv.settlement_ts}-${iv.regionid}`;
@@ -272,13 +278,9 @@ export class AemoData implements DurableObject {
         missingIntervals.push(iv);
       }
     }
+    this.log("DEBUG", `handleSync: Missing intervals count=${missingIntervals.length}`);
 
-    this.log(
-      "DEBUG",
-      `Missing intervals (${missingIntervals.length}): ${JSON.stringify(missingIntervals)}`
-    );
-
-    this.log("INFO", "Step 7: Insert missing records...");
+    this.log("INFO", "handleSync: Step 7: Insert missing records...");
     let insertedCount = 0;
     for (const iv of missingIntervals) {
       const cursor = this.sql.exec<IntervalRecord>(
@@ -312,7 +314,7 @@ export class AemoData implements DurableObject {
       insertedCount += cursor.rowsWritten;
     }
 
-    const msg = `Sync complete. Processed ${intervals.length} intervals; inserted ${insertedCount} new records.`;
+    const msg = `handleSync: Sync complete. Processed ${intervals.length} intervals; inserted ${insertedCount} new records.`;
     this.log("INFO", msg);
     return new Response(msg, { status: 200 });
   }
@@ -328,9 +330,11 @@ export class AemoData implements DurableObject {
    *
    * If lastSec is provided, it overrides start/end. Data is returned in descending order.
    * If start/end are provided, data is returned in ascending order by timestamp.
-   * If no param is provided, returns the latest records (descending order) up to `limit`.
+   * If no param is provided, returns the most recent records, in descending order.
    */
   private async handleRangeRequest(url: URL): Promise<Response> {
+    this.log("DEBUG", "handleRangeRequest: processing /range endpoint call.");
+
     try {
       // Parse paging parameters
       const limitParamRaw = url.searchParams.get("limit");
@@ -339,74 +343,99 @@ export class AemoData implements DurableObject {
       let offset = parseInt(offsetParamRaw ?? "0", 10);
       if (Number.isNaN(limit) || limit <= 0) limit = 100;
       if (Number.isNaN(offset) || offset < 0) offset = 0;
-      this.log("DEBUG", `Paging with limit=${limit}, offset=${offset}`);
+      this.log("DEBUG", `handleRangeRequest: Using limit=${limit}, offset=${offset}`);
 
       const nowMs = Date.now();
       const lastSecParam = url.searchParams.get("lastSec");
       const startParam = url.searchParams.get("start");
       const endParam = url.searchParams.get("end");
       const regionParam = url.searchParams.get("regionid");
+      this.log("DEBUG", `handleRangeRequest: lastSec=${lastSecParam}, start=${startParam}, end=${endParam}, regionid=${regionParam}`);
 
-      // If lastSec is provided, ensure no start/end is present, and do descending by default.
+      // If lastSec is provided, ensure no start/end is present, do descending
       if (lastSecParam) {
         if (startParam || endParam) {
-          return new Response(
-            JSON.stringify({ error: "Cannot combine lastSec with start or end." }),
-            { status: 400, headers: { "content-type": "application/json" } }
-          );
+          const errorMsg = "Cannot combine lastSec with start or end.";
+          this.log("DEBUG", `handleRangeRequest error: ${errorMsg}`);
+          return new Response(JSON.stringify({ error: errorMsg }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
         }
         const lastSec = parseInt(lastSecParam, 10);
         if (isNaN(lastSec) || lastSec <= 0) {
-          return new Response(JSON.stringify({ error: "Invalid lastSec." }), {
+          const errorMsg = "Invalid lastSec.";
+          this.log("DEBUG", `handleRangeRequest error: ${errorMsg}`);
+          return new Response(JSON.stringify({ error: errorMsg }), {
             status: 400,
             headers: { "content-type": "application/json" },
           });
         }
         if (lastSec > 604800) {
-          return new Response(JSON.stringify({ error: "Requested range too large." }), {
+          const errorMsg = "Requested range too large.";
+          this.log("DEBUG", `handleRangeRequest error: ${errorMsg}`);
+          return new Response(JSON.stringify({ error: errorMsg }), {
             status: 400,
             headers: { "content-type": "application/json" },
           });
         }
         const startMs = nowMs - lastSec * 1000;
         const endMs = nowMs;
-        // Descending for lastSec
+        this.log(
+          "DEBUG",
+          `handleRangeRequest: lastSec chosen range startMs=${startMs}, endMs=${endMs}`
+        );
         return this.queryRange(startMs, endMs, regionParam, false, limit, offset);
       }
 
       // If start or end is present, both must be
       if (startParam || endParam) {
         if (!startParam || !endParam) {
-          return new Response(
-            JSON.stringify({ error: "Must supply both start and end or neither." }),
-            { status: 400, headers: { "content-type": "application/json" } }
-          );
+          const errorMsg = "Must supply both start and end or neither.";
+          this.log("DEBUG", `handleRangeRequest error: ${errorMsg}`);
+          return new Response(JSON.stringify({ error: errorMsg }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
         }
         const startMs = parseInt(startParam, 10);
         const endMs = parseInt(endParam, 10);
         if (isNaN(startMs) || isNaN(endMs)) {
-          return new Response(JSON.stringify({ error: "Invalid start or end." }), {
+          const errorMsg = "Invalid start or end.";
+          this.log("DEBUG", `handleRangeRequest error: ${errorMsg}`);
+          return new Response(JSON.stringify({ error: errorMsg }), {
             status: 400,
             headers: { "content-type": "application/json" },
           });
         }
         if (endMs < startMs) {
-          return new Response(JSON.stringify({ error: "end must be >= start." }), {
+          const errorMsg = "end must be >= start.";
+          this.log("DEBUG", `handleRangeRequest error: ${errorMsg}`);
+          return new Response(JSON.stringify({ error: errorMsg }), {
             status: 400,
             headers: { "content-type": "application/json" },
           });
         }
         if ((endMs - startMs) > 604800000) {
-          return new Response(JSON.stringify({ error: "Requested range too large." }), {
+          const errorMsg = "Requested range too large.";
+          this.log("DEBUG", `handleRangeRequest error: ${errorMsg}`);
+          return new Response(JSON.stringify({ error: errorMsg }), {
             status: 400,
             headers: { "content-type": "application/json" },
           });
         }
-        // Ascending for explicit start/end range
+        this.log(
+          "DEBUG",
+          `handleRangeRequest: explicit range startMs=${startMs}, endMs=${endMs}`
+        );
         return this.queryRange(startMs, endMs, regionParam, true, limit, offset);
       }
 
-      // No params at all => return the most recent records, descending
+      // No params => return the most recent records in descending order
+      this.log(
+        "DEBUG",
+        "handleRangeRequest: No range parameters provided, returning latest records."
+      );
       return this.queryLatestRecords(regionParam, limit, offset);
     } catch (err) {
       this.log("ERROR", `handleRangeRequest error: ${String(err)}`);
@@ -419,12 +448,12 @@ export class AemoData implements DurableObject {
 
   /**
    * Retrieve rows from the database between startMs and endMs, with optional region filter,
-   * ordering ascending or descending as specified. Applies limit/offset for paging.
+   * and order ascending or descending. Applies limit/offset for paging.
    *
    * @param {number} startMs The lower bound of the timestamp range (inclusive).
    * @param {number} endMs The upper bound of the timestamp range (inclusive).
    * @param {string|null} regionParam Optional region ID filter.
-   * @param {boolean} asc If true, order by settlement_ts ascending; else descending.
+   * @param {boolean} asc If true, order by settlement_ts ascending; otherwise descending.
    * @param {number} limit The maximum rows to return (paging).
    * @param {number} offset The row offset to begin returning data (paging).
    * @return {Response} JSON response with the retrieved rows or an error.
@@ -438,7 +467,6 @@ export class AemoData implements DurableObject {
     offset: number
   ): Response {
     try {
-      // Correct the earlier 'ASC' duplication bug to support ascending/descending
       const orderBy = asc ? "ASC" : "DESC";
       let query = `
         SELECT settlement_ts, regionid, region, rrp, totaldemand, periodtype,
@@ -456,9 +484,16 @@ export class AemoData implements DurableObject {
       query += ` ORDER BY settlement_ts ${orderBy} LIMIT ? OFFSET ?`;
       values.push(limit, offset);
 
-      this.log("DEBUG", JSON.stringify({ query, values }));
+      this.log("DEBUG", `queryRange: Final SQL="${query}" with values=${JSON.stringify(values)}`);
       const rows = this.sql.exec<IntervalRecord>(query, ...values);
-      this.log("DEBUG", `Fetched ${rows.length} record(s) from queryRange.`);
+      this.log("DEBUG", `queryRange: Retrieved ${rows.length} record(s) from DB.`);
+
+      // Optionally log the first row if any
+      if (rows.length > 0) {
+        const sample = rows[0];
+        this.log("DEBUG", `queryRange: Sample row => settlement_ts=${sample.settlement_ts}, regionid=${sample.regionid}, rrp=${sample.rrp}`);
+      }
+
       return new Response(JSON.stringify(rows), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -502,9 +537,17 @@ export class AemoData implements DurableObject {
       query += ` ORDER BY settlement_ts DESC LIMIT ? OFFSET ?`;
       values.push(limit, offset);
 
-      this.log("DEBUG", JSON.stringify({ query, values }));
+      this.log("DEBUG", `queryLatestRecords: Final SQL="${query}" with values=${JSON.stringify(values)}`);
       const rows = this.sql.exec<IntervalRecord>(query, ...values);
-      this.log("DEBUG", `Fetched ${rows.length} record(s) from queryLatestRecords.`);
+      this.log("DEBUG", `queryLatestRecords: Retrieved ${rows.length} record(s) from DB.`);
+
+      if (rows.length > 0) {
+        const sample = rows[0];
+        this.log("DEBUG", `queryLatestRecords: Sample row => settlement_ts=${sample.settlement_ts}, regionid=${sample.regionid}, rrp=${sample.rrp}`);
+      } else {
+        this.log("DEBUG", "queryLatestRecords: No records returned.");
+      }
+
       return new Response(JSON.stringify(rows), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -522,7 +565,7 @@ export class AemoData implements DurableObject {
   private recordToInterval(item: AemoApiResponse["5MIN"][number]): AemoInterval | null {
     const tsMs = this.parseLocalBrisbaneMs(item.SETTLEMENTDATE);
     if (Number.isNaN(tsMs)) {
-      this.log("ERROR", `Invalid date parse for: "${item.SETTLEMENTDATE}". Got NaN.`);
+      this.log("ERROR", `recordToInterval: Invalid date parse for "${item.SETTLEMENTDATE}". Got NaN.`);
       return null;
     }
 
@@ -539,6 +582,9 @@ export class AemoData implements DurableObject {
         : null,
       semischeduledgeneration: (() => {
         // Attempt to handle naming variations
+        if (item.SEMISCHEduledGENERATION !== undefined) {
+          return parseFloat(String(item.SEMISCHEduledGENERATION));
+        }
         if (item.SEMISCHEduledGENERATION !== undefined) {
           return parseFloat(String(item.SEMISCHEduledGENERATION));
         }
@@ -578,7 +624,7 @@ export class AemoData implements DurableObject {
 
     const ms = Date.parse(adjusted);
     if (Number.isNaN(ms)) {
-      this.log("ERROR", `Failed to parse date string with +10 offset: "${adjusted}"`);
+      this.log("ERROR", `parseLocalBrisbaneMs: Failed to parse date string with +10 offset. original="${dateStr}", adjusted="${adjusted}"`);
       return NaN;
     }
     return ms;
