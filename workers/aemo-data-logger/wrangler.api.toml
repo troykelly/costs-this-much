@@ -1,0 +1,30 @@
+name = "aemo-api-worker"
+compatibility_date = "2025-03-18"
+upload_source_maps = true
+
+compatibility_flags = ["nodejs_compat"]
+
+main = "src/api/index.ts"
+workers_dev = true
+
+[durable_objects]
+  bindings = [
+    { name = "AEMO_DATA", class_name = "AemoData" },
+    { name = "API_ABUSE", class_name = "ApiAbuse" }
+  ]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AemoData", "ApiAbuse"]
+
+triggers = { crons = ["1,6,11,16,21,26,31,36,41,46,51,56 * * * *"] }
+
+[vars]
+LOG_LEVEL = "DEBUG"
+AEMO_API_URL = "https://visualisations.aemo.com.au/aemo/apps/api/report/5MIN"
+AEMO_API_HEADERS = '{ "Accept": "application/json" }'
+# The following environment variables must be set as real secrets in production:
+# CLIENT_IDS='["some-uuid-string","another-uuid-string"]'
+# SIGNING_KEYS='[{"private":"---BEGIN PRIVATE KEY---","public":"---BEGIN PUBLIC KEY---","start":"2025-01-01T00:00:00Z","end":"2026-01-01T00:00:00Z"}]'
+RATE_LIMIT_MAX="60"
+RATE_LIMIT_WINDOW_SEC="60"
