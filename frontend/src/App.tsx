@@ -4,10 +4,11 @@
  * CostsThisMuch library for session handling, local caching (IndexedDB), and
  * partial offline usage.
  *
- * Updated (19 March 2025):
- * • Switched from direct AEMO fetch to our own CostsThisMuch API by integrating
- *   the library from frontend/src/CostsThisMuch.ts.
- * • On mount, we now:
+ * Updated (20 March 2025):
+ * • Now uses an updated IndexedDB structure (a well-defined table with columns).
+ * • Removed manual "+10:00" offsets, as the API timestamps are ISO 8601. We display them
+ *   in Australia/Brisbane time via Intl.DateTimeFormat instead.
+ * • On mount:
  *    1) Initialise and log in with a known client_id.
  *    2) Preload the last 7 days of data into local storage.
  *    3) Fetch local data for display.
@@ -16,7 +17,7 @@
  *
  * Author: Troy Kelly <troy@troykelly.com>
  * Original: 16 March 2025
- * Last Updated: 19 March 2025
+ * Last Updated: 20 March 2025
  */
 
 import React, { useEffect, useState, ReactNode, useRef } from 'react';
@@ -111,11 +112,12 @@ function scenarioUrl(scenarioId: string, region: string = 'nsw'): string {
 }
 
 /**
- * Returns a full date/time string with "NEM Time" for display (ISO8601 + +10:00).
+ * Returns a full date/time string with "NEM Time" for display, using
+ * the Australian/Brisbane time zone. No manual offset.
  */
 function formatIntervalDate(dateString: string): string {
   if (!dateString) return '';
-  const date = new Date(dateString + '+10:00');
+  const date = new Date(dateString);
   const options: Intl.DateTimeFormatOptions = {
     timeZone: 'Australia/Brisbane',
     year: 'numeric',
@@ -130,11 +132,11 @@ function formatIntervalDate(dateString: string): string {
 }
 
 /**
- * Formats a short "weekday + 24 hour AEMO TIME" string.
+ * Formats a short "weekday + 24 hour AEMO TIME" string in Brisbane time.
  */
 function formatDayTimeAemoString(dateString: string): string {
   if (!dateString) return '';
-  const d = new Date(dateString + '+10:00');
+  const d = new Date(dateString);
   const options: Intl.DateTimeFormatOptions = {
     timeZone: 'Australia/Brisbane',
     weekday: 'short',
@@ -223,7 +225,7 @@ function mapStateNameToRegionKey(stateName: string): string | null {
 
 /**
  * Convert an IntervalRecord from the CostsThisMuch library into the old AemoInterval shape
- * used throughout the UI. This helps us keep the rest of the code minimal.
+ * used throughout the UI. Helps keep the rest of the code minimal.
  */
 function transformIntervalRecordToAemoInterval(rec: IntervalRecord): AemoInterval {
   return {
@@ -503,7 +505,7 @@ const App: React.FC = () => {
   function computeDailySummaries(intervals: AemoInterval[], region: SupportedRegion): DailySummary[] {
     const summaryMap: Record<string, DailySummary> = {};
     intervals.forEach(iv => {
-      const dt = new Date(iv.SETTLEMENTDATE + '+10:00');
+      const dt = new Date(iv.SETTLEMENTDATE);
       const dateKey = dt.toLocaleDateString('en-AU', { timeZone: 'Australia/Brisbane' });
       let wholesale = iv.RRP * 0.1;
       if (wholesale < 0) wholesale = 0;
@@ -526,8 +528,6 @@ const App: React.FC = () => {
     return Object.values(summaryMap).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   }
 
-  const dailySummaries = computeDailySummaries(regionIntervals, regionKey as SupportedRegion);
-
   function getBrisbaneNow(): Date {
     const now = new Date();
     const brisbaneOffsetMinutes = 10 * 60;
@@ -538,11 +538,11 @@ const App: React.FC = () => {
   const twentyFourHoursAgo = new Date(brisbaneNow.getTime() - 24 * 60 * 60 * 1000);
   const fortyEightHoursAgo = new Date(brisbaneNow.getTime() - 48 * 60 * 60 * 1000);
   const recent24Intervals = regionIntervals.filter(iv => {
-    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
+    const d = new Date(iv.SETTLEMENTDATE);
     return d >= twentyFourHoursAgo && d <= brisbaneNow;
   });
   const previous24Intervals = regionIntervals.filter(iv => {
-    const d = new Date(iv.SETTLEMENTDATE + '+10:00');
+    const d = new Date(iv.SETTLEMENTDATE);
     return d >= fortyEightHoursAgo && d < twentyFourHoursAgo;
   });
 
@@ -940,7 +940,7 @@ const App: React.FC = () => {
                 </Typography>
               </AccordionSummary>
               <AccordionDetails>
-                {dailySummaries.length === 0 ? (
+                {regionIntervals.length === 0 ? (
                   <Typography variant="body2" sx={{ color: '#444' }}>
                     No daily summary data available.
                   </Typography>
@@ -957,7 +957,7 @@ const App: React.FC = () => {
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                        {dailySummaries.map(ds => (
+                        {computeDailySummaries(regionIntervals, regionKey as SupportedRegion).map(ds => (
                           <TableRow key={ds.date}>
                             <TableCell>{ds.date}</TableCell>
                             <TableCell align="right">{(ds.minWholesale / 100).toFixed(2)}</TableCell>

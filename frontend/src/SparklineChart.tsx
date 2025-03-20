@@ -5,6 +5,10 @@
  * Shows both "today" (most recent 24h) and "yesterday" (previous 24h) lines,
  * highlighting approximate scenario costs at each interval.
  *
+ * Updated (20 March 2025):
+ * • Removed manual "+10:00" offset. The API timestamps are already ISO8601 in UTC.
+ *   We rely on the "Australia/Brisbane" time zone for display.
+ *
  * Author: Troy Kelly
  * Date: 16 March 2025
  */
@@ -73,7 +77,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({
   function computePoints(intervals: AemoInterval[], base: Date) {
     const dataPoints: DataPoint[] = [];
     const poly = intervals.map(iv => {
-      const dt = new Date(iv.SETTLEMENTDATE + '+10:00');
+      const dt = new Date(iv.SETTLEMENTDATE);
       const rate = getRetailRateFromInterval(iv, region, false, true);
       const cost = EnergyScenarios.getCostForScenario(scenarioKey, rate);
       const x = computeX(dt, base);
@@ -164,7 +168,7 @@ const SparklineChart: React.FC<SparklineChartProps> = ({
                 fontSize="10"
                 style={{ pointerEvents: 'none' }}
               >
-                {new Date(hoveredPoint.date + '+10:00').toLocaleTimeString('en-AU',{
+                {hoveredPoint.dt.toLocaleTimeString('en-AU',{
                   timeZone: 'Australia/Brisbane',
                   hour: '2-digit',
                   minute: '2-digit'

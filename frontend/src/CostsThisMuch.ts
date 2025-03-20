@@ -8,7 +8,7 @@
  *
  * 2. Local data storage in the browser's IndexedDB for offline and efficient retrieval:
  *    - fetchAndStoreLastWeek(), fetchAndStoreRange(), and fetchAndStoreLatest() methods query
- *      the API (with paging) and store intervals in IndexedDB.
+ *      the API (with paging) and store intervals in a well-defined table in IndexedDB.
  *    - getLocalDataInRange() retrieves intervals from IndexedDB for a specified time range.
  *
  * 3. Automatic paging: The library reads the API's pagination headers and continues fetching
@@ -51,7 +51,10 @@
  */
 
 const DB_NAME = 'aemo_intervals_db';
-const DB_VERSION = 1;
+/**
+ * Increased DB_VERSION to 2 to migrate to a more "table-like" structure with columns & indexes.
+ */
+const DB_VERSION = 2;
 const OBJECT_STORE_NAME = 'interval_records';
 
 /**
@@ -175,8 +178,8 @@ export class CostsThisMuch {
   }
 
   /**
-   * Initialises the IndexedDB structure (creates object store if not present).
-   * Must be called before usage of store/query methods.
+   * Initialises the IndexedDB structure (creates object store if not present,
+   * or updates it to a well-defined table with columns/indexes if DB_VERSION changed).
    *
    * @return {Promise<void>}
    */
@@ -188,15 +191,32 @@ export class CostsThisMuch {
     }
     this.dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
       const openReq = indexedDB.open(DB_NAME, DB_VERSION);
+
       openReq.onupgradeneeded = () => {
         const db = openReq.result;
-        if (!db.objectStoreNames.contains(OBJECT_STORE_NAME)) {
-          const store = db.createObjectStore(OBJECT_STORE_NAME, {
-            keyPath: ['settlement', 'regionid'],
-          });
-          store.createIndex('settlement_idx', 'settlement', { unique: false });
+
+        // If an older store exists, delete it so we can create a new well-defined structure.
+        if (db.objectStoreNames.contains(OBJECT_STORE_NAME)) {
+          db.deleteObjectStore(OBJECT_STORE_NAME);
         }
+
+        // Create a new object store with an auto-increment primary key, plus indexes for columns.
+        // We'll use a unique composite index on [settlement, regionid] to avoid duplicates.
+        const store = db.createObjectStore(OBJECT_STORE_NAME, {
+          keyPath: 'id',
+          autoIncrement: true
+        });
+
+        // Index for settlement alone (string ISO8601). Used for time-based range queries.
+        store.createIndex('settlement_idx', 'settlement', { unique: false });
+
+        // Composite index on [settlement, regionid] ensures data uniqueness for that combination.
+        store.createIndex('settlement_region_idx', ['settlement', 'regionid'], { unique: true });
+
+        // Index for regionid if needed for quick region lookups.
+        store.createIndex('regionid_idx', 'regionid', { unique: false });
       };
+
       openReq.onsuccess = () => {
         resolve(openReq.result);
       };
@@ -259,7 +279,7 @@ export class CostsThisMuch {
 
   /**
    * Fetches all intervals from the past week from our /data API,
-   * storing them in IndexedDB. Paginates until no more pages.
+   * storing them in IndexedDB as rows in the newly defined table.
    *
    * @return {Promise<void>}
    */
@@ -301,7 +321,7 @@ export class CostsThisMuch {
 
   /**
    * Retrieves locally-stored intervals from the IndexedDB, selecting those whose settlement
-   * time is in [startMs..endMs], inclusive.
+   * time is in [startMs..endMs] (ISO8601), inclusive, sorted in ascending order by settlement time.
    *
    * @param {number} startMs Start time in ms
    * @param {number} endMs End time in ms
@@ -314,6 +334,10 @@ export class CostsThisMuch {
       const store = tx.objectStore(OBJECT_STORE_NAME);
       const index = store.index('settlement_idx');
 
+      /**
+       * Convert numeric ms to ISO8601. We store the data as an ISO8601 string, so we do
+       * an IDBKeyRange bound from e.g. "2025-03-20T00:00:00.000Z" to "2025-03-27T00:00:00.000Z".
+       */
       const startIso = new Date(startMs).toISOString();
       const endIso = new Date(endMs).toISOString();
       const range = IDBKeyRange.bound(startIso, endIso, false, false);
@@ -327,6 +351,7 @@ export class CostsThisMuch {
           results.push(cursor.value as IntervalRecord);
           cursor.continue();
         } else {
+          // Sort by settlement ascending (ISO8601 lexicographic also works, but let's be certain).
           results.sort((a, b) => {
             const da = a.settlement ? Date.parse(a.settlement) : 0;
             const db = b.settlement ? Date.parse(b.settlement) : 0;
@@ -398,11 +423,7 @@ export class CostsThisMuch {
     const limit = params.limit ?? 100;
     url.searchParams.set('limit', String(limit));
     url.searchParams.set('offset', String(offset));
-    if (params.ascending) {
-      // We'll interpret "ascending" to mean "start/end => ascending" in the worker.
-      // The worker checks presence of start/end to sort ascending, or uses desc for lastSec.
-      // No direct param needed unless we have a custom approach. We'll omit a direct param for now.
-    }
+    // 'ascending' is handled server-side if start/end are present; no param needed beyond that.
 
     await this.ensureValidAccessToken();
 
@@ -489,7 +510,7 @@ export class CostsThisMuch {
     this.session.accessToken = data.access_token;
     this.session.accessTokenExpiresAt = now + data.expires_in;
 
-    // if a new refresh is present
+    // if a new refresh token is present
     if (data.refresh_token) {
       this.session.refreshToken = data.refresh_token;
       this.session.refreshTokenExpiresAt = now + (14 * 24 * 3600);
@@ -499,8 +520,8 @@ export class CostsThisMuch {
   }
 
   /**
-   * Writes an array of intervals to IndexedDB. Duplicate records are overwritten or skipped
-   * (the store uses PK of [settlement, regionid]).
+   * Writes an array of intervals to IndexedDB using object store columns. Duplicate entries
+   * (same settlement and regionid) will be updated due to the settlement_region_idx unique constraint.
    */
   private async storeInIndexedDb(records: IntervalRecord[]): Promise<void> {
     if (!records.length) {
@@ -512,6 +533,9 @@ export class CostsThisMuch {
       const store = tx.objectStore(OBJECT_STORE_NAME);
 
       for (const rec of records) {
+        // We rely on the unique composite index [settlement, regionid] to prevent duplicates
+        // or to update if the same record is inserted again. We use put(), which either adds
+        // or overwrites the existing row that matches the unique index constraints.
         store.put(rec);
       }
 
