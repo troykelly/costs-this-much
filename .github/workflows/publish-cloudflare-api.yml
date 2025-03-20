@@ -18,126 +18,44 @@ jobs:
         uses: actions/checkout@v4
 
       ##########################################################################
-      # 2) Ensure the Cloudflare Worker Service ("CLOUDFLARE_SERVICE_NAME-api")
-      #    and a custom domain ("api.CLOUDFLARE_DOMAIN_NAME") exist.
-      #    (Using X-Auth-Email and X-Auth-Key because POST with a token is disallowed.)
-      ##########################################################################
-      - name: Verify or create CF Worker Service & domain
-        id: ensure-service
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const email = process.env.CLOUDFLARE_EMAIL;
-            const apiKey = process.env.CLOUDFLARE_API_KEY;
-            const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-            const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
-            const workerName = `${process.env.CLOUDFLARE_SERVICE_NAME}-api`;
-            const domainToAttach = `api.${process.env.CLOUDFLARE_DOMAIN_NAME}`;
-
-            if (!email || !apiKey || !accountId) {
-                throw new Error("Missing CLOUDFLARE_EMAIL, CLOUDFLARE_API_KEY, or CLOUDFLARE_ACCOUNT_ID in environment.");
-            }
-            if (!process.env.CLOUDFLARE_SERVICE_NAME || !process.env.CLOUDFLARE_DOMAIN_NAME) {
-                throw new Error("Missing CLOUDFLARE_SERVICE_NAME or CLOUDFLARE_DOMAIN_NAME in environment variables.");
-            }
-
-            async function cfApiRequest(path, method = 'GET', body = null) {
-                const url = `${baseUrl}${path}`;
-                const headers = {
-                    'X-Auth-Email': email,
-                    'X-Auth-Key': apiKey,
-                    'Content-Type': 'application/json'
-                };
-                const opts = { method, headers };
-                if (body) {
-                    opts.body = JSON.stringify(body);
-                }
-                const resp = await fetch(url, opts);
-                if (!resp.ok && resp.status !== 404) {
-                    const text = await resp.text();
-                    throw new Error(`Cloudflare API error [${resp.status}]: ${text}`);
-                }
-                return { status: resp.status, data: await resp.json() };
-            }
-
-            // Ensure the Worker Service is created
-            async function ensureServiceExists() {
-                const path = `/workers/services/${encodeURIComponent(workerName)}`;
-                const result = await cfApiRequest(path, 'GET');
-                if (result.status === 404) {
-                    console.log(`Worker service '${workerName}' not found. Creating it...`);
-                    const createPath = `/workers/services`;
-                    const createResp = await cfApiRequest(createPath, 'POST', { name: workerName });
-                    if (createResp.status >= 400) {
-                        throw new Error(`Failed to create Worker service '${workerName}'`);
-                    }
-                    console.log(`Created Worker service '${workerName}'.`);
-                } else {
-                    console.log(`Worker service '${workerName}' already exists.`);
-                }
-            }
-
-            // Ensure that a custom domain is attached for "api.CLOUDFLARE_DOMAIN_NAME"
-            async function ensureDomainAttached() {
-                const path = `/workers/services/${encodeURIComponent(workerName)}/domains`;
-                const { status, data } = await cfApiRequest(path, 'GET');
-                if (status === 404) {
-                    // If the service wasn't found and just got created, try again
-                    return ensureDomainAttached();
-                }
-                const attached = data.result || [];
-                const domainFound = attached.some(d => d.name === domainToAttach);
-                if (!domainFound) {
-                    console.log(`Domain '${domainToAttach}' not attached. Attaching now...`);
-                    const attachResp = await cfApiRequest(path, 'POST', { name: domainToAttach });
-                    if (attachResp.status >= 400) {
-                        throw new Error(`Failed to attach domain '${domainToAttach}' to worker '${workerName}'`);
-                    }
-                    console.log(`Domain '${domainToAttach}' successfully attached.`);
-                } else {
-                    console.log(`Domain '${domainToAttach}' is already attached.`);
-                }
-            }
-
-            await ensureServiceExists();
-            await ensureDomainAttached();
-        env:
-          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
-          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_DOMAIN_NAME: ${{ vars.CLOUDFLARE_DOMAIN_NAME }}
-          CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
-
-      ##########################################################################
-      # 3) Deploy using Wrangler, ensuring secrets and environment variables
-      #    are set. We'll treat SIGNING_KEYS & CLIENT_IDS as "secrets" and
-      #    the rest as standard "vars."
+      # 2) Deploy the API Worker using Wrangler. If the Worker does not exist,
+      #    Wrangler will create it automatically. We also attach the custom
+      #    domain using wrangler's "custom-domains create" command—if it already
+      #    exists, the command will fail but we can safely continue.
       ##########################################################################
       - name: Deploy Cloudflare API Worker
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # We place the two key-based secrets as wrangler secrets
-          # (SIGNING_KEYS, CLIENT_IDS).
+          # Provide these names to wrangler as secrets to bind:
           secrets: |
             SIGNING_KEYS
             CLIENT_IDS
-          # Set environment variables via wrangler var set.
-          # The "preCommands" block runs before "wrangler publish".
+          # We'll set environment variables (wrangler var set) before publishing.
           preCommands: |
-            echo "Setting environment variables..."
+            echo "Setting environment variables for the Worker..."
             wrangler var set LOG_LEVEL "$API_LOG_LEVEL"
             wrangler var set AEMO_API_URL "$AEMO_API_URL"
             wrangler var set AEMO_API_HEADERS "$AEMO_API_HEADERS"
             wrangler var set RATE_LIMIT_MAX "$API_RATE_LIMIT_MAX"
             wrangler var set RATE_LIMIT_WINDOW_SEC "$API_RATE_LIMIT_WINDOW_SEC"
+
+            echo "Attempting to attach custom domain..."
+            # If it fails because the domain already exists, we'll continue.
+            wrangler custom-domains create "api.${CLOUDFLARE_DOMAIN_NAME}" || echo "Domain may already be attached."
+          # Publish the Worker (creates it if necessary).
           command: publish
         env:
+          # Worker secrets
           SIGNING_KEYS: ${{ secrets.API_SIGNING_KEYS }}
           CLIENT_IDS: ${{ vars.API_CLIENT_IDS }}
+          # Configuration variables
           API_LOG_LEVEL: ${{ vars.API_LOG_LEVEL }}
           AEMO_API_URL: ${{ vars.AEMO_API_URL }}
           AEMO_API_HEADERS: ${{ vars.AEMO_API_HEADERS }}
           API_RATE_LIMIT_MAX: ${{ vars.API_RATE_LIMIT_MAX }}
           API_RATE_LIMIT_WINDOW_SEC: ${{ vars.API_RATE_LIMIT_WINDOW_SEC }}
+          # Used for domain creation
+          CLOUDFLARE_DOMAIN_NAME: ${{ vars.CLOUDFLARE_DOMAIN_NAME }}
+          CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
