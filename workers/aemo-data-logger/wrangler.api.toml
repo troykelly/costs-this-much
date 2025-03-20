@@ -21,8 +21,11 @@ triggers = { crons = ["1,6,11,16,21,26,31,36,41,46,51,56 * * * *"] }
 
 [vars]
 LOG_LEVEL = "DEBUG"
-AEMO_API_URL = "https://visualisations.aemo.com.au/aemo/apps/api/report/5MIN"
-AEMO_API_HEADERS = '{ "Accept": "application/json" }'
+AEMO_API_URL = "https://visualisations.aemo.com.au/aemo/apps/api/report"
+AEMO_DATA_5MIN = "5MIN"
+AEMO_DATA_5MIN_BODY = '{"timeScale":["30MIN"]}'
+AEMO_DATA_CUMUL_PRICE = "NEM_DASHBOARD_CUMUL_PRICE"
+AEMO_DATA_SUMMARY = "ELEC_NEM_SUMMARY"
 APP_ALLOWED_ORIGINS='["http://localhost:5173"]'
 # The following environment variables must be set as real secrets in production:
 # CLIENT_IDS='["some-uuid-string","another-uuid-string"]'

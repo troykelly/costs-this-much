@@ -1,87 +1,110 @@
 /**
  * Service Worker (sw.js)
  *
- * Fetches and stores the last 7 days of intervals from our custom API using full pagination,
- * storing them in IndexedDB. Subdomain or querystring-based pages can communicate via postMessage
- * to retrieve or store intervals in this shared database. The base domain for the API is taken
- * from "import.meta.env.VITE_API_URL" if available; otherwise defaults to empty string.
+ * This file is served as-is from the "public/" folder. Vite doesn't process it,
+ * so "import.meta.env" won't work inside here.
  *
- * Usage:
- *   - On install, fetch the last 7 days from the API with full pagination.
- *   - Subdomains (or local dev with querystring) postMessage { requestId, command: 'GET_INTERVALS', payload: {startMs, endMs}} 
- *     or 'STORE_INTERVALS' to this service worker to share data.
+ * Instead, we wait for the main application to send us the API URL via postMessage.
+ * Once we have that URL, we do the 7-day fetch. Meanwhile, the service worker can
+ * still respond to GET_INTERVALS or STORE_INTERVALS messages with the same IndexedDB logic.
  */
 
-// We rely on modern browsers to allow import.meta.env for environment variables:
-const API_BASE_URL = (typeof import !== 'undefined' && import.meta && import.meta.env && import.meta.env.VITE_API_URL) || '';
+let API_BASE_URL = '';  // Will be set via postMessage from main.tsx
 
 const DB_NAME = 'costsThisMuchGlobalDB';
 const DB_VERSION = 1;
 const STORE_NAME = 'intervals';
 
-// On install: fetch the last 7 days with pagination and store in IndexedDB
+/**
+ * Handle the 'install' event. Since we don't yet know the API URL, we won't attempt
+ * any data fetch here. Instead, we'll wait for 'CONFIGURE_API'.
+ */
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    (async () => {
-      await self.skipWaiting();
-      const now = Date.now();
-      const oneWeekAgo = now - 7 * 24 * 60 * 60 * 1000;
-      try {
-        await fetchAndStoreRange(oneWeekAgo, now);
-      } catch (err) {
-        console.error('SW install - failed to fetch 7 days:', err);
-      }
-    })()
-  );
+  event.waitUntil(self.skipWaiting());
 });
 
-// Activate event: become the controlling service worker
+/**
+ * Become active immediately.
+ */
 self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-// We do not override fetch requests for offline; 
-// all usage is via message-based communication.
-self.addEventListener('fetch', () => {});
+/**
+ * We do not intercept fetch requests for offline usage here, so we leave fetch alone.
+ */
+self.addEventListener('fetch', () => {
+  // No offline fetch handling
+});
 
-// Listen for messages from subdomains or local pages
+/**
+ * Listen for messages from client pages. This includes:
+ *   - CONFIGURE_API: sets the API_BASE_URL and optionally triggers 7‑day fetch
+ *   - STORE_INTERVALS: store provided intervals in IndexedDB
+ *   - GET_INTERVALS: retrieve intervals from IndexedDB in [startMs..endMs]
+ */
 self.addEventListener('message', async (evt) => {
-  const data = evt.data;
-  if (!data || !data.command || !data.requestId) {
+  if (!evt.data || !evt.data.command || !evt.data.requestId) {
     return;
   }
 
   try {
-    switch (data.command) {
-      case 'STORE_INTERVALS': {
-        const records = data.payload;
-        await storeIntervals(records);
+    switch (evt.data.command) {
+      case 'CONFIGURE_API': {
+        // e.g. { requestId, command: 'CONFIGURE_API', apiBaseURL: '...' }
+        API_BASE_URL = evt.data.apiBaseURL || '';
+        if (!API_BASE_URL) {
+          throw new Error('API base URL is empty or missing.');
+        }
+        // Immediately fetch and store the last 7 days of intervals
+        const now = Date.now();
+        const oneWeekAgo = now - 7 * 24 * 60 * 60 * 1000;
+        await fetchAndStoreRange(oneWeekAgo, now);
+
         evt.source?.postMessage?.({
-          requestId: data.requestId,
+          requestId: evt.data.requestId,
           status: 'ok',
-          storedCount: records.length
+          message: `API base URL set to '${API_BASE_URL}', and 7-day fetch complete.`
         });
         break;
       }
+
+      case 'STORE_INTERVALS': {
+        const records = evt.data.payload;
+        if (Array.isArray(records)) {
+          await storeIntervals(records);
+        }
+        evt.source?.postMessage?.({
+          requestId: evt.data.requestId,
+          status: 'ok',
+          storedCount: Array.isArray(records) ? records.length : 0
+        });
+        break;
+      }
+
       case 'GET_INTERVALS': {
-        if (!data.payload || typeof data.payload.startMs !== 'number' || typeof data.payload.endMs !== 'number') {
+        if (!evt.data.payload ||
+            typeof evt.data.payload.startMs !== 'number' ||
+            typeof evt.data.payload.endMs !== 'number') {
           throw new Error('Invalid GET_INTERVALS payload');
         }
-        const { startMs, endMs } = data.payload;
+        const { startMs, endMs } = evt.data.payload;
         const intervals = await getIntervalsInRange(startMs, endMs);
         evt.source?.postMessage?.({
-          requestId: data.requestId,
+          requestId: evt.data.requestId,
           status: 'ok',
           intervals
         });
         break;
       }
+
       default:
-        throw new Error(`Unknown command: ${data.command}`);
+        throw new Error(`Unknown command: ${evt.data.command}`);
     }
+
   } catch (err) {
     evt.source?.postMessage?.({
-      requestId: data.requestId,
+      requestId: evt.data.requestId,
       status: 'error',
       message: err instanceof Error ? err.message : String(err)
     });
@@ -89,7 +112,7 @@ self.addEventListener('message', async (evt) => {
 });
 
 /**
- * Opens or upgrades the global IndexedDB instance.
+ * Open or create the global IndexedDB.
  */
 async function openGlobalDB() {
   return new Promise((resolve, reject) => {
@@ -101,7 +124,7 @@ async function openGlobalDB() {
           keyPath: 'id',
           autoIncrement: true
         });
-        store.createIndex('settlement_idx', 'settlement', { unique: false });
+        store.createIndex('settlement_idx', 'settlement');
         store.createIndex('settlement_region_idx', ['settlement', 'regionid'], { unique: true });
       }
     };
@@ -111,7 +134,7 @@ async function openGlobalDB() {
 }
 
 /**
- * Stores intervals in IndexedDB, updating duplicates based on settlement+regionid.
+ * Store intervals in the DB, updating duplicates by settlement+regionid.
  */
 async function storeIntervals(records) {
   if (!records || !records.length) return;
@@ -128,7 +151,7 @@ async function storeIntervals(records) {
 }
 
 /**
- * Retrieves intervals whose settlement in [startMs..endMs], sorted ascending by settlement.
+ * Retrieve intervals in [startMs..endMs], sorted ascending by settlement.
  */
 async function getIntervalsInRange(startMs, endMs) {
   const db = await openGlobalDB();
@@ -149,7 +172,6 @@ async function getIntervalsInRange(startMs, endMs) {
         results.push(cursor.value);
         cursor.continue();
       } else {
-        // Sort ascending by settlement date
         results.sort((a, b) => {
           const da = a.settlement ? Date.parse(a.settlement) : 0;
           const db = b.settlement ? Date.parse(b.settlement) : 0;
@@ -163,13 +185,16 @@ async function getIntervalsInRange(startMs, endMs) {
 }
 
 /**
- * Fetch intervals from [startMs..endMs] in 100-record pages, store in IDB.
+ * Fetch intervals from [startMs..endMs] in 100-record increments with next-page logic.
  */
 async function fetchAndStoreRange(startMs, endMs) {
+  if (!API_BASE_URL) {
+    throw new Error('API_BASE_URL is not configured.');
+  }
   let offset = 0;
-  let hasNextPage = true;
+  let hasNext = true;
 
-  while (hasNextPage) {
+  while (hasNext) {
     const url = new URL('/data', API_BASE_URL);
     url.searchParams.set('start', String(startMs));
     url.searchParams.set('end', String(endMs));
@@ -179,19 +204,16 @@ async function fetchAndStoreRange(startMs, endMs) {
     const resp = await fetch(url.toString());
     if (!resp.ok) {
       const txt = await resp.text();
-      console.error('API error fetching intervals:', txt);
-      throw new Error(`Failed to fetch intervals (status=${resp.status})`);
+      throw new Error(`Fetch intervals failed (status=${resp.status}): ${txt}`);
     }
     const data = await resp.json();
     if (!Array.isArray(data)) {
       throw new Error('Response did not contain an array of intervals.');
     }
-
     await storeIntervals(data);
 
-    // Check if server indicates another page
     const xHasNext = (resp.headers.get('X-Has-Next-Page') || '').trim().toLowerCase();
-    hasNextPage = (xHasNext === 'true');
+    hasNext = (xHasNext === 'true');
     offset += data.length;
   }
 }
