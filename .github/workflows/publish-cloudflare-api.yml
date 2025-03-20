@@ -249,7 +249,7 @@ jobs:
           --upload-source-maps \
           --var LOG_LEVEL:${{ vars.API_LOG_LEVEL }} \
           AEMO_API_URL:${{ vars.AEMO_API_URL }} \
-          AEMO_API_HEADERS:${{ vars.AEMO_API_HEADERS }} \
+          AEMO_API_HEADERS:'${{ vars.AEMO_API_HEADERS }}' \
           RATE_LIMIT_MAX:${{ vars.API_RATE_LIMIT_MAX }} \
           RATE_LIMIT_WINDOW_SEC:${{ vars.API_RATE_LIMIT_WINDOW_SEC }}
         env:
