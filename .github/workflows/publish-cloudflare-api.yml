@@ -92,124 +92,124 @@ jobs:
       # 3) Ensure the custom domain ("api.CLOUDFLARE_DOMAIN_NAME") is pointed
       #    at the Worker using a valid zone_id lookup and then a PUT domain request.
       ##########################################################################
-      - name: Verify or Attach Domain
-        id: verify-domain
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const email = process.env.CLOUDFLARE_EMAIL;
-            const apiKey = process.env.CLOUDFLARE_API_KEY;
-            const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-            const workerName = `${process.env.CLOUDFLARE_SERVICE_NAME}-api`;
-            const domainToAttach = `api.${process.env.CLOUDFLARE_DOMAIN_NAME}`;
+      # - name: Verify or Attach Domain
+      #   id: verify-domain
+      #   uses: actions/github-script@v6
+      #   with:
+      #     script: |
+      #       const email = process.env.CLOUDFLARE_EMAIL;
+      #       const apiKey = process.env.CLOUDFLARE_API_KEY;
+      #       const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+      #       const workerName = `${process.env.CLOUDFLARE_SERVICE_NAME}-api`;
+      #       const domainToAttach = `api.${process.env.CLOUDFLARE_DOMAIN_NAME}`;
 
-            if (!email || !apiKey || !accountId) {
-                throw new Error("Missing CLOUDFLARE_EMAIL, CLOUDFLARE_API_KEY, or CLOUDFLARE_ACCOUNT_ID.");
-            }
-            if (!process.env.CLOUDFLARE_SERVICE_NAME || !process.env.CLOUDFLARE_DOMAIN_NAME) {
-                throw new Error("Missing CLOUDFLARE_SERVICE_NAME or CLOUDFLARE_DOMAIN_NAME in environment.");
-            }
+      #       if (!email || !apiKey || !accountId) {
+      #           throw new Error("Missing CLOUDFLARE_EMAIL, CLOUDFLARE_API_KEY, or CLOUDFLARE_ACCOUNT_ID.");
+      #       }
+      #       if (!process.env.CLOUDFLARE_SERVICE_NAME || !process.env.CLOUDFLARE_DOMAIN_NAME) {
+      #           throw new Error("Missing CLOUDFLARE_SERVICE_NAME or CLOUDFLARE_DOMAIN_NAME in environment.");
+      #       }
 
-            const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
+      #       const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
 
-            /**
-            * Generic API request helper.
-            */
-            async function cfApiRequest(path, method = 'GET', body = null) {
-                const url = `${baseUrl}${path}`;
-                const headers = {
-                    'X-Auth-Email': email,
-                    'X-Auth-Key': apiKey,
-                    'Content-Type': 'application/json'
-                };
-                const opts = { method, headers };
-                if (body) {
-                    opts.body = JSON.stringify(body);
-                }
-                const resp = await fetch(url, opts);
-                return { ok: resp.ok, status: resp.status, data: await resp.json() };
-            }
+      #       /**
+      #       * Generic API request helper.
+      #       */
+      #       async function cfApiRequest(path, method = 'GET', body = null) {
+      #           const url = `${baseUrl}${path}`;
+      #           const headers = {
+      #               'X-Auth-Email': email,
+      #               'X-Auth-Key': apiKey,
+      #               'Content-Type': 'application/json'
+      #           };
+      #           const opts = { method, headers };
+      #           if (body) {
+      #               opts.body = JSON.stringify(body);
+      #           }
+      #           const resp = await fetch(url, opts);
+      #           return { ok: resp.ok, status: resp.status, data: await resp.json() };
+      #       }
 
-            /**
-            * Fetch all zones by paging (in case there are more than 20).
-            * Returns an array of zone objects.
-            */
-            async function fetchAllZones() {
-                let page = 1;
-                const perPage = 50;
-                let allZones = [];
+      #       /**
+      #       * Fetch all zones by paging (in case there are more than 20).
+      #       * Returns an array of zone objects.
+      #       */
+      #       async function fetchAllZones() {
+      #           let page = 1;
+      #           const perPage = 50;
+      #           let allZones = [];
 
-                while (true) {
-                    const resp = await cfApiRequest(`/zones?page=${page}&per_page=${perPage}`, 'GET');
-                    if (!resp.ok) {
-                        throw new Error(`Failed to list zones (page=${page}). Status=${resp.status}`);
-                    }
-                    const result = resp.data?.result || [];
-                    allZones = allZones.concat(result);
+      #           while (true) {
+      #               const resp = await cfApiRequest(`/zones?page=${page}&per_page=${perPage}`, 'GET');
+      #               if (!resp.ok) {
+      #                   throw new Error(`Failed to list zones (page=${page}). Status=${resp.status}`);
+      #               }
+      #               const result = resp.data?.result || [];
+      #               allZones = allZones.concat(result);
 
-                    const info = resp.data?.result_info;
-                    if (!info) break;
-                    if (info.page >= info.total_pages) break;
-                    page++;
-                }
-                return allZones;
-            }
+      #               const info = resp.data?.result_info;
+      #               if (!info) break;
+      #               if (info.page >= info.total_pages) break;
+      #               page++;
+      #           }
+      #           return allZones;
+      #       }
 
-            // 1) Retrieve all zones from the account, then find the zone matching CLOUDFLARE_DOMAIN_NAME
-            const domainName = process.env.CLOUDFLARE_DOMAIN_NAME;
-            const allZones = await fetchAllZones();
-            const matchingZone = allZones.find((z) => z.name === domainName);
+      #       // 1) Retrieve all zones from the account, then find the zone matching CLOUDFLARE_DOMAIN_NAME
+      #       const domainName = process.env.CLOUDFLARE_DOMAIN_NAME;
+      #       const allZones = await fetchAllZones();
+      #       const matchingZone = allZones.find((z) => z.name === domainName);
 
-            if (!matchingZone) {
-                console.log("Available zones from Cloudflare:");
-                allZones.forEach(z => console.log(`• Zone= '${z.name}', zone_id='${z.id}'`));
-                throw new Error(`No matching zone found for domain '${domainName}'.`);
-            }
-            const zoneId = matchingZone.id || "";
-            console.log(`Using zone_id='${zoneId}' for domain '${domainName}'.`);
+      #       if (!matchingZone) {
+      #           console.log("Available zones from Cloudflare:");
+      #           allZones.forEach(z => console.log(`• Zone= '${z.name}', zone_id='${z.id}'`));
+      #           throw new Error(`No matching zone found for domain '${domainName}'.`);
+      #       }
+      #       const zoneId = matchingZone.id || "";
+      #       console.log(`Using zone_id='${zoneId}' for domain '${domainName}'.`);
 
-            // 2) Check existing domain attachments
-            const listDomainsPath = `/workers/domains?service=${encodeURIComponent(workerName)}&environment=api`;
-            const listResp = await cfApiRequest(listDomainsPath, 'GET');
-            if (!listResp.ok && listResp.status !== 404) {
-                console.log(`Unable to list domains. status=${listResp.status}, data:\n`, JSON.stringify(listResp.data, null, 2));
-                throw new Error(`Cannot verify domain attachments for '${workerName}'`);
-            }
-            const domainArr = listResp.data?.result;
-            if (!Array.isArray(domainArr)) {
-                console.log("Missing or invalid 'result' in domain listing. Data:\n", JSON.stringify(listResp.data, null, 2));
-                throw new Error("Cannot parse domain listing from Cloudflare response.");
-            }
+      #       // 2) Check existing domain attachments
+      #       const listDomainsPath = `/workers/domains?service=${encodeURIComponent(workerName)}&environment=api`;
+      #       const listResp = await cfApiRequest(listDomainsPath, 'GET');
+      #       if (!listResp.ok && listResp.status !== 404) {
+      #           console.log(`Unable to list domains. status=${listResp.status}, data:\n`, JSON.stringify(listResp.data, null, 2));
+      #           throw new Error(`Cannot verify domain attachments for '${workerName}'`);
+      #       }
+      #       const domainArr = listResp.data?.result;
+      #       if (!Array.isArray(domainArr)) {
+      #           console.log("Missing or invalid 'result' in domain listing. Data:\n", JSON.stringify(listResp.data, null, 2));
+      #           throw new Error("Cannot parse domain listing from Cloudflare response.");
+      #       }
 
-            // 3) Attach domain if not already attached
-            const alreadyAttached = domainArr.some((d) => d.hostname === domainToAttach);
-            if (!alreadyAttached) {
-                console.log(`Domain '${domainToAttach}' not attached to worker '${workerName}'. Attaching now...`);
+      #       // 3) Attach domain if not already attached
+      #       const alreadyAttached = domainArr.some((d) => d.hostname === domainToAttach);
+      #       if (!alreadyAttached) {
+      #           console.log(`Domain '${domainToAttach}' not attached to worker '${workerName}'. Attaching now...`);
 
-                const attachReqBody = {
-                    environment: "api",
-                    hostname: domainToAttach,
-                    service: workerName,
-                    zone_id: zoneId
-                };
+      #           const attachReqBody = {
+      #               environment: "api",
+      #               hostname: domainToAttach,
+      #               service: workerName,
+      #               zone_id: zoneId
+      #           };
 
-                const attachResp = await cfApiRequest("/workers/domains", "PUT", attachReqBody);
-                if (!attachResp.ok) {
-                    console.log("Failed to attach domain. Response:\n", JSON.stringify(attachResp.data, null, 2));
-                    throw new Error(`Failed to attach domain '${domainToAttach}' to Worker '${workerName}'.`);
-                }
-                console.log(`Domain '${domainToAttach}' successfully attached to worker '${workerName}'.`);
-            } else {
-                console.log(`Domain '${domainToAttach}' is already attached to worker '${workerName}'.`);
-            }
+      #           const attachResp = await cfApiRequest("/workers/domains", "PUT", attachReqBody);
+      #           if (!attachResp.ok) {
+      #               console.log("Failed to attach domain. Response:\n", JSON.stringify(attachResp.data, null, 2));
+      #               throw new Error(`Failed to attach domain '${domainToAttach}' to Worker '${workerName}'.`);
+      #           }
+      #           console.log(`Domain '${domainToAttach}' successfully attached to worker '${workerName}'.`);
+      #       } else {
+      #           console.log(`Domain '${domainToAttach}' is already attached to worker '${workerName}'.`);
+      #       }
 
-            core.setOutput("done", "true");
-        env:
-          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
-          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
-          CLOUDFLARE_DOMAIN_NAME: ${{ vars.CLOUDFLARE_DOMAIN_NAME }}
-          CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      #       core.setOutput("done", "true");
+      #   env:
+      #     CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+      #     CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+      #     CLOUDFLARE_DOMAIN_NAME: ${{ vars.CLOUDFLARE_DOMAIN_NAME }}
+      #     CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
+      #     CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       ##########################################################################
       # 4) Ensure the secrets (SIGNING_KEYS, CLIENT_IDS) are set.
