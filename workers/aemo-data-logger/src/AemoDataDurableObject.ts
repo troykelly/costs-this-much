@@ -584,11 +584,21 @@ export class AemoData implements DurableObject {
         LIMIT 5
       `
       );
-      const result = resultCursor.toArray();
+      const resultRaw = resultCursor.toArray();
+
+      // Transform the rows
+      const result = resultRaw.map((row) => {
+        return {
+          settlement: row.settlement_ts == null ? null : new Date(row.settlement_ts).toISOString(),
+          regionid: row.regionid,
+          region: row.region,
+          rrp: row.rrp,
+        };
+      });
 
       return new Response(JSON.stringify({
         message: "Inserted one row, now reading top 5 rows by settlement_ts:",
-        insertedTs: uniqueTs,
+        inserted: new Date(uniqueTs).toISOString(),
         rows: result,
       }), {
         status: 200,
@@ -649,7 +659,23 @@ export class AemoData implements DurableObject {
         this.log("DEBUG", `queryRange: sampleRow => ${JSON.stringify(sample)}`);
       }
 
-      return new Response(JSON.stringify(rowArr), {
+      // Transform rows to use ISO 8601 instead of ms
+      const transformed = rowArr.map((row) => ({
+        settlement: row.settlement_ts == null
+          ? null
+          : new Date(row.settlement_ts).toISOString(),
+        regionid: row.regionid,
+        region: row.region,
+        rrp: row.rrp,
+        totaldemand: row.totaldemand,
+        periodtype: row.periodtype,
+        netinterchange: row.netinterchange,
+        scheduledgeneration: row.scheduledgeneration,
+        semischeduledgeneration: row.semischeduledgeneration,
+        apcflag: row.apcflag,
+      }));
+
+      return new Response(JSON.stringify(transformed), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -709,7 +735,23 @@ export class AemoData implements DurableObject {
         this.log("DEBUG", `queryLatestRecords: sampleRow => ${JSON.stringify(sample)}`);
       }
 
-      return new Response(JSON.stringify(rowArr), {
+      // Transform to ISO8601
+      const transformed = rowArr.map((row) => ({
+        settlement: row.settlement_ts == null
+          ? null
+          : new Date(row.settlement_ts).toISOString(),
+        regionid: row.regionid,
+        region: row.region,
+        rrp: row.rrp,
+        totaldemand: row.totaldemand,
+        periodtype: row.periodtype,
+        netinterchange: row.netinterchange,
+        scheduledgeneration: row.scheduledgeneration,
+        semischeduledgeneration: row.semischeduledgeneration,
+        apcflag: row.apcflag,
+      }));
+
+      return new Response(JSON.stringify(transformed), {
         status: 200,
         headers: { "content-type": "application/json" },
       });

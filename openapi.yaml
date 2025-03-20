@@ -196,7 +196,7 @@ paths:
                 items:
                   $ref: "#/components/schemas/IntervalRecord"
               example:
-                - settlement_ts: 1742358000000
+                - settlement: "2025-03-20T12:34:56Z"
                   regionid: "QLD1"
                   region: "QLD1"
                   rrp: 56.78
@@ -206,7 +206,7 @@ paths:
                   scheduledgeneration: 3400
                   semischeduledgeneration: 1200
                   apcflag: 0
-                - settlement_ts: 1742358300000
+                - settlement: "2025-03-20T12:39:56Z"
                   regionid: "QLD1"
                   region: "QLD1"
                   rrp: 60.12
@@ -292,9 +292,10 @@ components:
     IntervalRecord:
       type: object
       properties:
-        settlement_ts:
-          type: integer
-          description: Settlement timestamp in ms (UTC).
+        settlement:
+          type: string
+          format: date-time
+          description: Settlement date/time in UTC in ISO8601 format.
         regionid:
           type: string
           description: Region ID, e.g. "QLD1".
