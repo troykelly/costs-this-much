@@ -8,8 +8,9 @@ on:
 
 jobs:
   deploy:
-    name: "Deploy to Cloudflare Workers"
+    name: "Deploy Cloudflare API & Logger Worker"
     runs-on: ubuntu-latest
+
     steps:
       ##########################################################################
       # 1) Check out the repository
@@ -18,44 +19,204 @@ jobs:
         uses: actions/checkout@v4
 
       ##########################################################################
-      # 2) Deploy the API Worker using Wrangler. If the Worker does not exist,
-      #    Wrangler will create it automatically. We also attach the custom
-      #    domain using wrangler's "custom-domains create" command—if it already
-      #    exists, the command will fail but we can safely continue.
+      # (Prerequisite) Install Wrangler globally for usage in subsequent steps
       ##########################################################################
-      - name: Deploy Cloudflare API Worker
+      - name: Install Wrangler
+        run: npm install -g wrangler@latest
+
+      ##########################################################################
+      # 2) Verify if the Worker exists. If not, create it with Wrangler.
+      #
+      #    We use "actions/github-script" + X-Auth-Key approach to check existence
+      #    (HTTP GET). If not found, we run "wrangler publish" from this same script
+      #    to create the Worker. This satisfies:
+      #      1. Ensure the worker (`CLOUDFLARE_SERVICE_NAME-api`) is created.
+      #      2. If it is not - create it.
+      ##########################################################################
+      - name: Verify or Create CF Worker Service
+        id: verify-worker
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const email = process.env.CLOUDFLARE_EMAIL;
+            const apiKey = process.env.CLOUDFLARE_API_KEY;
+            const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+            const workerName = `${process.env.CLOUDFLARE_SERVICE_NAME}-api`;
+
+            if (!email || !apiKey || !accountId) {
+                throw new Error("Missing CLOUDFLARE_EMAIL, CLOUDFLARE_API_KEY, or CLOUDFLARE_ACCOUNT_ID in environment.");
+            }
+            if (!process.env.CLOUDFLARE_SERVICE_NAME) {
+                throw new Error("Missing CLOUDFLARE_SERVICE_NAME in environment variables.");
+            }
+
+            // Check if the Worker service exists via X-Auth-Key call.
+            const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
+            async function cfApiRequest(path, method = 'GET') {
+                const url = `${baseUrl}${path}`;
+                const headers = {
+                    'X-Auth-Email': email,
+                    'X-Auth-Key': apiKey,
+                    'Content-Type': 'application/json'
+                };
+                const resp = await fetch(url, { method, headers });
+                return { ok: resp.ok, status: resp.status, data: await resp.json() };
+            }
+
+            const checkPath = `/workers/services/${encodeURIComponent(workerName)}`;
+            const result = await cfApiRequest(checkPath, 'GET');
+
+            if (!result.ok && result.status === 404) {
+                console.log(`Worker service '${workerName}' not found. Creating with Wrangler...`);
+
+                // Use a shell command to run wrangler publish, which will create the Worker script
+                // if it doesn't already exist. We rely on the local wrangler.toml or commands here.
+                // If your worker name is auto-set in wrangler.toml, that will suffice. Otherwise, you
+                // might pass --name directly in the command below. Example:
+                //   wrangler publish --name=$WORKER_NAME
+                // For brevity, we'll rely on your existing wrangler.api.toml configuration.
+                const execSync = require('child_process').execSync;
+                try {
+                    execSync('wrangler publish --env=api', { stdio: 'inherit' });
+                    console.log(`Created Worker '${workerName}' via Wrangler publish.`);
+                } catch (err) {
+                    throw new Error(`Failed to create Worker service '${workerName}' via Wrangler.\nError: ${err.message}`);
+                }
+            } else if (!result.ok) {
+                console.log(`Got status=${result.status} from Cloudflare. Data:\n`, JSON.stringify(result.data, null, 2));
+                throw new Error(`Failed to verify Worker service '${workerName}'.`);
+            } else {
+                console.log(`Worker service '${workerName}' already exists.`);
+            }
+            core.setOutput("done", "true");
+        env:
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
+
+      ##########################################################################
+      # 3) Ensure the custom domain ("api.CLOUDFLARE_DOMAIN_NAME") is pointed
+      #    at the Worker. If not, attach it. This satisfies:
+      #      3. Ensure that the domain is pointed at the worker.
+      ##########################################################################
+      - name: Verify or Attach Domain
+        id: verify-domain
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const email = process.env.CLOUDFLARE_EMAIL;
+            const apiKey = process.env.CLOUDFLARE_API_KEY;
+            const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+            const workerName = `${process.env.CLOUDFLARE_SERVICE_NAME}-api`;
+            const domainToAttach = `api.${process.env.CLOUDFLARE_DOMAIN_NAME}`;
+
+            if (!email || !apiKey || !accountId) {
+                throw new Error("Missing CLOUDFLARE_EMAIL, CLOUDFLARE_API_KEY, or CLOUDFLARE_ACCOUNT_ID in environment.");
+            }
+            if (!process.env.CLOUDFLARE_SERVICE_NAME || !process.env.CLOUDFLARE_DOMAIN_NAME) {
+                throw new Error("Missing CLOUDFLARE_SERVICE_NAME or CLOUDFLARE_DOMAIN_NAME in environment.");
+            }
+
+            const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
+            async function cfApiRequest(path, method = 'GET', body = null) {
+                const url = `${baseUrl}${path}`;
+                const headers = {
+                    'X-Auth-Email': email,
+                    'X-Auth-Key': apiKey,
+                    'Content-Type': 'application/json'
+                };
+                const opts = { method, headers };
+                if (body) {
+                    opts.body = JSON.stringify(body);
+                }
+                const resp = await fetch(url, opts);
+                return { ok: resp.ok, status: resp.status, data: await resp.json() };
+            }
+
+            // Check domain
+            const path = `/workers/services/${encodeURIComponent(workerName)}/domains`;
+            const list = await cfApiRequest(path, 'GET');
+            if (!list.ok && list.status !== 404) {
+                console.log(`Unable to list domains. Status=${list.status}, data:\n`, JSON.stringify(list.data, null, 2));
+                throw new Error(`Cannot verify domain attachments for '${workerName}'`);
+            }
+            const domainArr = (list.data && list.data.result) ? list.data.result : [];
+            const alreadyAttached = domainArr.some(d => d.name === domainToAttach);
+
+            if (!alreadyAttached) {
+                console.log(`Domain '${domainToAttach}' not attached to worker '${workerName}'. Attaching now with Wrangler...`);
+                const execSync = require('child_process').execSync;
+                try {
+                    execSync(`wrangler custom-domains create ${domainToAttach} --env=api`, { stdio: 'inherit' });
+                    console.log(`Domain '${domainToAttach}' successfully attached to worker '${workerName}'.`);
+                } catch (err) {
+                    console.log('Failed to attach domain via Wrangler. Possibly it is already attached or another conflict.\n', err.message);
+                    throw new Error(`Failed to attach domain '${domainToAttach}' to Worker '${workerName}'.`);
+                }
+            } else {
+                console.log(`Domain '${domainToAttach}' is already attached to worker '${workerName}'.`);
+            }
+            core.setOutput("done", "true");
+        env:
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_DOMAIN_NAME: ${{ vars.CLOUDFLARE_DOMAIN_NAME }}
+          CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      ##########################################################################
+      # 4) Ensure that the secrets (SIGNING_KEYS, CLIENT_IDS) are set.
+      #    We'll use Wrangler to store them. This ensures:
+      #      4. Ensure that the secrets SIGNING_KEYS, CLIENT_IDS are correctly set.
+      ##########################################################################
+      - name: Ensure Worker Secrets
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # Provide these names to wrangler as secrets to bind:
           secrets: |
             SIGNING_KEYS
             CLIENT_IDS
-          # We'll set environment variables (wrangler var set) before publishing.
-          preCommands: |
-            echo "Setting environment variables for the Worker..."
-            wrangler var set LOG_LEVEL "$API_LOG_LEVEL"
-            wrangler var set AEMO_API_URL "$AEMO_API_URL"
-            wrangler var set AEMO_API_HEADERS "$AEMO_API_HEADERS"
-            wrangler var set RATE_LIMIT_MAX "$API_RATE_LIMIT_MAX"
-            wrangler var set RATE_LIMIT_WINDOW_SEC "$API_RATE_LIMIT_WINDOW_SEC"
-
-            echo "Attempting to attach custom domain..."
-            # If it fails because the domain already exists, we'll continue.
-            wrangler custom-domains create "api.${CLOUDFLARE_DOMAIN_NAME}" || echo "Domain may already be attached."
-          # Publish the Worker (creates it if necessary).
-          command: publish
         env:
-          # Worker secrets
+          # The actual secret values
           SIGNING_KEYS: ${{ secrets.API_SIGNING_KEYS }}
           CLIENT_IDS: ${{ vars.API_CLIENT_IDS }}
-          # Configuration variables
+
+      ##########################################################################
+      # 5) Ensure environment variables (LOG_LEVEL, AEMO_API_URL, etc.) are set.
+      #    We'll do this with `wrangler var set` commands in preCommands, but
+      #    we can run `publish` at the end as well. The step ensures:
+      #      5. Ensure the variables: LOG_LEVEL, AEMO_API_URL, AEMO_API_HEADERS,
+      #         RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_SEC are correctly set.
+      ##########################################################################
+      - name: Ensure Env Vars
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Just run some commands, but do *not* do a final publish yet.
+          preCommands: |
+            wrangler var set LOG_LEVEL "$API_LOG_LEVEL" --env=api
+            wrangler var set AEMO_API_URL "$AEMO_API_URL" --env=api
+            wrangler var set AEMO_API_HEADERS "$AEMO_API_HEADERS" --env=api
+            wrangler var set RATE_LIMIT_MAX "$API_RATE_LIMIT_MAX" --env=api
+            wrangler var set RATE_LIMIT_WINDOW_SEC "$API_RATE_LIMIT_WINDOW_SEC" --env=api
+          command: whoami
+        env:
           API_LOG_LEVEL: ${{ vars.API_LOG_LEVEL }}
           AEMO_API_URL: ${{ vars.AEMO_API_URL }}
           AEMO_API_HEADERS: ${{ vars.AEMO_API_HEADERS }}
           API_RATE_LIMIT_MAX: ${{ vars.API_RATE_LIMIT_MAX }}
           API_RATE_LIMIT_WINDOW_SEC: ${{ vars.API_RATE_LIMIT_WINDOW_SEC }}
-          # Used for domain creation
-          CLOUDFLARE_DOMAIN_NAME: ${{ vars.CLOUDFLARE_DOMAIN_NAME }}
-          CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
+
+      ##########################################################################
+      # 6) Deploy the API to Production using Wrangler.
+      #    This final step publishes the Worker with the updated settings.
+      ##########################################################################
+      - name: Final Deploy to Production
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: publish --env=api
