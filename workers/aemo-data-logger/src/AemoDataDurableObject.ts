@@ -41,12 +41,26 @@ function getLogPriority(level: string): number {
 }
 
 /**
- * Environment for AemoData DO, referencing environment variables.
+ * Environment for AemoData DO, referencing environment variables. The additional fields
+ * allow for constructing distinct AEMO endpoints to fetch summary data, FCAS prices, etc.
  */
 export interface AemoDataEnv {
-  AEMO_API_URL: string;         // e.g. "https://visualisations.aemo.com.au/aemo/apps/api/report/..."
-  AEMO_API_HEADERS: string;     // JSON string of headers: '{"Accept":"application/json"}'
-  LOG_LEVEL?: string;           // e.g. "DEBUG", "INFO", ...
+  // Base URL for AEMO's data service, e.g. "https://visualisations.aemo.com.au/aemo/apps/api/report"
+  AEMO_API_URL: string;
+
+  // Specific endpoints or identifiers for different data sets:
+  // e.g. "ELEC_NEM_SUMMARY", "ELEC_NEM_SUMMARY_PRICES", "ELEC_NEM_SUMMARY_MARKET_NOTICE", etc.
+  AEMO_DATA_SUMMARY: string;                  // e.g. "ELEC_NEM_SUMMARY"
+  AEMO_DATA_SUMMARY_PRICES: string;           // e.g. "ELEC_NEM_SUMMARY_PRICES"
+  AEMO_DATA_SUMMARY_MARKET_NOTICE?: string;   // e.g. "ELEC_NEM_SUMMARY_MARKET_NOTICE"
+  AEMO_DATA_5MIN?: string;                    // e.g. "5MIN"
+  AEMO_DATA_CUMUL_PRICE?: string;             // e.g. "NEM_DASHBOARD_CUMUL_PRICE"
+
+  // JSON string containing HTTP headers for requests to AEMO's API, e.g. '{"Accept":"application/json"}'
+  AEMO_API_HEADERS: string;
+
+  // Optional environment-based log level: "DEBUG", "INFO", "WARN", or "ERROR".
+  LOG_LEVEL?: string;
 }
 
 /**
@@ -81,13 +95,14 @@ export interface MarketIntervalRecord extends Record<string, SqlStorageValue> {
 }
 
 /**
- * Extracted interval row from ELEC_NEM_SUMMARY plus FCAS data from ELEC_NEM_SUMMARY_PRICES.
+ * Represents a single merged record from ELEC_NEM_SUMMARY and ELEC_NEM_SUMMARY_PRICES,
+ * plus any expansions for additional markets in future.
  */
 interface CombinedIntervalRow {
   settlement_ts: number;
   regionid: string;
   region: string;
-  market_name: string;                 // e.g. "NEM"
+  market_name: string;
   energy_price: number | null;
   price_status: string | null;
   apc_flag: number | null;
@@ -97,8 +112,6 @@ interface CombinedIntervalRow {
   scheduled_generation: number | null;
   semischeduled_generation: number | null;
   interconnector_flows: string | null;
-
-  // FCAS / ancillary service columns:
   raise_reg_price: number | null;
   lower_reg_price: number | null;
   raise_1sec_price: number | null;
@@ -123,11 +136,10 @@ export class AemoData implements DurableObject {
     this.sql = state.storage.sql;
     this.env = env;
 
-    // Determine the configured log level.
     const levelString = env.LOG_LEVEL ?? "WARN";
     this.logLevel = getLogPriority(levelString);
 
-    // Check if our table exists. If not, create it. Then run debug checks.
+    // Create or verify table existence
     try {
       this.log("DEBUG", "Verifying existence of market_interval_data table.");
       this.sql.exec("SELECT 1 FROM market_interval_data LIMIT 1;");
@@ -197,102 +209,100 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * handleSync - handles scheduled ingestion from AEMO.  
-   * Expects a JSON structure containing:
-   *   ELEC_NEM_SUMMARY:      an array of objects (one per region)
-   *   ELEC_NEM_SUMMARY_PRICES: an array of objects (FCAS details, keyed by region)
+   * handleSync - loads summary data and prices data from individual endpoints,
+   * merges them, then stores them in the database.
    */
   private async handleSync(): Promise<Response> {
-    this.log("INFO", "handleSync: Step 1: Attempting to download new AEMO data...");
+    this.log("INFO", "handleSync: Starting retrieval of ELEC_NEM_SUMMARY & ELEC_NEM_SUMMARY_PRICES");
 
-    // Prepare request
-    const requestBody = {}; // No special body needed for this example, adjust as needed
+    // Build final endpoints
+    const summaryUrl = `${this.env.AEMO_API_URL}/${this.env.AEMO_DATA_SUMMARY}`;
+    const summaryPricesUrl = `${this.env.AEMO_API_URL}/${this.env.AEMO_DATA_SUMMARY_PRICES}`;
     const headers = this.parseHeaders(this.env.AEMO_API_HEADERS);
-    this.log("DEBUG", `handleSync: Request headers: ${JSON.stringify(headers)}`);
 
-    // Fetch from AEMO
-    let resp: Response;
+    let summaryData: any;
+    let summaryPricesData: any;
     try {
-      resp = await fetch(this.env.AEMO_API_URL, {
-        method: "POST",
+      // Get the summary data
+      this.log("DEBUG", `Fetching summary data from: ${summaryUrl}`);
+      const sResp = await fetch(summaryUrl, {
+        method: "GET",
         headers: {
           ...headers,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(requestBody),
       });
+      if (!sResp.ok) {
+        const bodyText = await sResp.text();
+        throw new Error(`Summary fetch error => status=${sResp.status}, body=${bodyText}`);
+      }
+      summaryData = await sResp.json();
+
+      // Get the summary prices data
+      this.log("DEBUG", `Fetching summary prices data from: ${summaryPricesUrl}`);
+      const spResp = await fetch(summaryPricesUrl, {
+        method: "GET",
+        headers: {
+          ...headers,
+          "Content-Type": "application/json",
+        },
+      });
+      if (!spResp.ok) {
+        const bodyText = await spResp.text();
+        throw new Error(`Summary Prices fetch error => status=${spResp.status}, body=${bodyText}`);
+      }
+      summaryPricesData = await spResp.json();
+
     } catch (err) {
-      const msg = `handleSync: AEMO API fetch failed => ${(err as Error).message}`;
+      const msg = `handleSync: Data fetch failed => ${(err as Error).message}`;
       this.log("ERROR", msg);
       return new Response(msg, { status: 500 });
     }
 
-    if (!resp.ok) {
-      const errText = await resp.text();
-      const msg = `handleSync: AEMO API error => status=${resp.status}, body=${errText}`;
-      this.log("WARN", msg);
-      return new Response(msg, { status: 500 });
+    // We'll combine them into a single object that mimics the user-provided example.
+    const data = {
+      ELEC_NEM_SUMMARY: Array.isArray(summaryData) ? summaryData : [],
+      ELEC_NEM_SUMMARY_PRICES: Array.isArray(summaryPricesData) ? summaryPricesData : [],
+      // If you want to fetch market notices too, you'd do similarly:
+      // ELEC_NEM_SUMMARY_MARKET_NOTICE: ...
+    };
+
+    // Validate arrays
+    if (!Array.isArray(data.ELEC_NEM_SUMMARY) || !Array.isArray(data.ELEC_NEM_SUMMARY_PRICES)) {
+      const errMsg = "handleSync: Invalid arrays found in the combined data object.";
+      this.log("ERROR", errMsg);
+      return new Response(errMsg, { status: 500 });
     }
 
-    // Try JSON parse
-    this.log("INFO", "handleSync: Step 2: Checking the returned data structure...");
-    let data: any;
-    try {
-      data = await resp.json();
-    } catch (err) {
-      const msg = `handleSync: invalid JSON => ${(err as Error).message}`;
-      this.log("ERROR", msg);
-      return new Response(msg, { status: 500 });
-    }
+    this.log("INFO", "handleSync: Step 2: Merging data from ELEC_NEM_SUMMARY & ELEC_NEM_SUMMARY_PRICES");
 
-    // Validate presence of the arrays
-    if (!Array.isArray(data.ELEC_NEM_SUMMARY)) {
-      const msg = `handleSync: missing or invalid ELEC_NEM_SUMMARY array.`;
-      this.log("WARN", msg);
-      return new Response(msg, { status: 500 });
-    }
-    if (!Array.isArray(data.ELEC_NEM_SUMMARY_PRICES)) {
-      const msg = `handleSync: missing or invalid ELEC_NEM_SUMMARY_PRICES array.`;
-      this.log("WARN", msg);
-      return new Response(msg, { status: 500 });
-    }
-
-    this.log("INFO", "handleSync: Step 3: Parsing intervals and merging FCAS data...");
-
-    // Build a quick region => FCAS map from ELEC_NEM_SUMMARY_PRICES
+    // Build region => FCAS map from ELEC_NEM_SUMMARY_PRICES
     const fcasMap = new Map<string, any>();
     for (const p of data.ELEC_NEM_SUMMARY_PRICES) {
-      const r = String(p.REGIONID || "").trim();
-      if (r) {
-        fcasMap.set(r, p);
+      const region = String(p.REGIONID || "").trim();
+      if (region) {
+        fcasMap.set(region, p);
       }
     }
 
-    // Build combined records from ELEC_NEM_SUMMARY
+    // Merge to produce final CombinedIntervalRow
     const combinedRows: CombinedIntervalRow[] = [];
     for (const item of data.ELEC_NEM_SUMMARY) {
       const regionid = String(item.REGIONID || "").trim();
       if (!regionid) {
-        // Skip invalid region
         continue;
       }
       const settlement_ts = this.parseLocalBrisbaneMs(item.SETTLEMENTDATE);
       if (Number.isNaN(settlement_ts)) {
-        this.log(
-          "ERROR",
-          `handleSync: invalid date parse => "${item.SETTLEMENTDATE}" => NaN`
-        );
+        this.log("ERROR", `Invalid date parse => "${item.SETTLEMENTDATE}" => NaN`);
         continue;
       }
-
-      // Merge FCAS data if it exists
-      let fc = fcasMap.get(regionid) || {};
-      // Construct a full row
-      const row: CombinedIntervalRow = {
+      const fc = fcasMap.get(regionid) || {};
+      combinedRows.push({
         settlement_ts,
         regionid,
-        region: regionid, // For minimal changes, store regionid into 'region' column
-        market_name: "NEM", // Hard-coded to "NEM" in this example
+        region: regionid,
+        market_name: "NEM",
         energy_price: item.PRICE ?? null,
         price_status: item.PRICE_STATUS ?? null,
         apc_flag: item.APCFLAG ?? null,
@@ -303,7 +313,6 @@ export class AemoData implements DurableObject {
         semischeduled_generation: item.SEMISCHEDULEDGENERATION ?? null,
         interconnector_flows: item.INTERCONNECTORFLOWS ?? null,
 
-        // FCAS columns from ELEC_NEM_SUMMARY_PRICES
         raise_reg_price: fc.RAISEREGRRP ?? null,
         lower_reg_price: fc.LOWERREGRRP ?? null,
         raise_1sec_price: fc.RAISE1SECRRP ?? null,
@@ -314,17 +323,16 @@ export class AemoData implements DurableObject {
         lower_6sec_price: fc.LOWER6SECRRP ?? null,
         lower_60sec_price: fc.LOWER60SECRRP ?? null,
         lower_5min_price: fc.LOWER5MINRRP ?? null,
-      };
-      combinedRows.push(row);
+      });
     }
 
     if (!combinedRows.length) {
-      const msg = `handleSync: no valid intervals found; skipping.`;
+      const msg = "handleSync: No valid intervals found after merging summary & prices.";
       this.log("WARN", msg);
       return new Response(msg, { status: 200 });
     }
 
-    // For insertion dedup, find earliest and latest from combined
+    // Deduplicate by checking existing DB rows first
     let earliest = combinedRows[0].settlement_ts;
     let latest = combinedRows[0].settlement_ts;
     for (const row of combinedRows) {
@@ -332,17 +340,14 @@ export class AemoData implements DurableObject {
       if (row.settlement_ts > latest) latest = row.settlement_ts;
     }
 
-    // Identify region IDs
     const regionIds = [...new Set(combinedRows.map((r) => r.regionid))];
-    this.log("DEBUG", `handleSync: earliest=${earliest}, latest=${latest}, total=${combinedRows.length}`);
-
-    // Check the DB for existing intervals in that range & same region(s)
+    const placeholders: string = regionIds.map(() => "?").join(", ");
     if (!regionIds.length) {
       const msg = "handleSync: intervals have no region IDs. skipping.";
       this.log("WARN", msg);
       return new Response(msg, { status: 200 });
     }
-    const placeholders: string = regionIds.map(() => "?").join(", ");
+
     const selectSql = `
       SELECT settlement_ts, regionid, market_name
       FROM market_interval_data
@@ -351,24 +356,14 @@ export class AemoData implements DurableObject {
         AND regionid IN (${placeholders})
         AND market_name = 'NEM'
     `;
-    const existingCursor = this.sql.exec(
-      selectSql,
-      earliest,
-      latest,
-      ...regionIds
-    );
+    const existingCursor = this.sql.exec(selectSql, earliest, latest, ...regionIds);
     const existingRows = existingCursor.toArray();
     const existingKeys = new Set<string>();
     for (const row of existingRows) {
       existingKeys.add(`${row.settlement_ts}-${row.regionid}-${row.market_name}`);
     }
+    this.log("DEBUG", `Found ${existingKeys.size} existing intervals in [${earliest},${latest}].`);
 
-    this.log(
-      "DEBUG",
-      `handleSync: found ${existingKeys.size} existing intervals in [${earliest},${latest}].`
-    );
-
-    // Insert missing
     const missing: CombinedIntervalRow[] = [];
     for (const r of combinedRows) {
       const key = `${r.settlement_ts}-${r.regionid}-${r.market_name}`;
@@ -376,7 +371,7 @@ export class AemoData implements DurableObject {
         missing.push(r);
       }
     }
-    this.log("DEBUG", `handleSync: missingCount=${missing.length}`);
+    this.log("DEBUG", `Missing row count to insert: ${missing.length}`);
 
     let insertedCount = 0;
     for (const r of missing) {
@@ -449,13 +444,12 @@ export class AemoData implements DurableObject {
    *   - start/end => ascending
    *   - regionid => optional
    *   - limit/offset => paging
-   * If no parameters, returns the most recent record for each region (descending) from market_interval_data.
+   * If no parameters, returns the most recent record for each region (descending).
    */
   private async handleRangeRequest(url: URL): Promise<Response> {
     this.log("DEBUG", "handleRangeRequest: invoked.");
 
     try {
-      // parse paging info
       const limitParam = url.searchParams.get("limit");
       const offsetParam = url.searchParams.get("offset");
       let limit = parseInt(limitParam ?? "100", 10);
@@ -495,7 +489,6 @@ export class AemoData implements DurableObject {
             headers: { "content-type": "application/json" },
           });
         }
-        // Arbitrary cap check
         if (lastSec > 604800) {
           const msg = "Requested range too large.";
           this.log("DEBUG", `handleRangeRequest error: ${msg}`);
@@ -504,6 +497,7 @@ export class AemoData implements DurableObject {
             headers: { "content-type": "application/json" },
           });
         }
+        // compute range
         const startMs = nowMs - lastSec * 1000;
         const endMs = nowMs;
         this.log("DEBUG", `handleRangeRequest: lastSec => startMs=${startMs}, endMs=${endMs}`);
@@ -546,15 +540,10 @@ export class AemoData implements DurableObject {
             headers: { "content-type": "application/json" },
           });
         }
-        this.log(
-          "DEBUG",
-          `handleRangeRequest: explicit => startMs=${startMs}, endMs=${endMs}`
-        );
         return this.queryRange(startMs, endMs, regionParam, true, limit, offset);
       }
 
       // No param => fetch the most recent record for each region in descending order.
-      this.log("DEBUG", "handleRangeRequest: no parameters => calling queryLatestRecords (desc).");
       return this.queryLatestRecords(regionParam, limit, offset);
 
     } catch (err) {
@@ -573,7 +562,7 @@ export class AemoData implements DurableObject {
    */
   private async handleTestInsertThenRead(): Promise<Response> {
     try {
-      // Insert a brand-new row every time
+      // Insert a brand-new row
       const uniqueTs = Date.now() + Math.floor(Math.random() * 100000);
       const region = "DEBUG_MANUAL";
       const price = 999.99;
@@ -632,7 +621,7 @@ export class AemoData implements DurableObject {
         null
       );
 
-      // Immediately select rows (limit=5)
+      // Query the last 5
       const resultCursor = this.sql.exec<MarketIntervalRecord>(
         `
         SELECT settlement_ts, regionid, region, market_name,
@@ -644,17 +633,16 @@ export class AemoData implements DurableObject {
       );
       const resultRaw = resultCursor.toArray();
 
-      // Transform the rows
-      const result = resultRaw.map((row) => {
-        return {
-          settlement: row.settlement_ts == null ? null : new Date(row.settlement_ts).toISOString(),
-          regionid: row.regionid,
-          region: row.region,
-          market_name: row.market_name,
-          energy_price: row.energy_price,
-          price_status: row.price_status,
-        };
-      });
+      const result = resultRaw.map((row) => ({
+        settlement: row.settlement_ts == null
+          ? null
+          : new Date(row.settlement_ts).toISOString(),
+        regionid: row.regionid,
+        region: row.region,
+        market_name: row.market_name,
+        energy_price: row.energy_price,
+        price_status: row.price_status,
+      }));
 
       return new Response(
         JSON.stringify(
@@ -682,7 +670,7 @@ export class AemoData implements DurableObject {
 
   /**
    * queryRange: returns rows for settlement_ts in [startMs..endMs], optional region filter,
-   * ordering asc/desc. If 0 rows => logs min & max boundary. Also sets pagination headers:
+   * ordering asc/desc. Also sets pagination headers:
    *  X-Page, X-Limit, X-Total-Pages, X-Has-Next-Page, X-Total-Count
    */
   private queryRange(
@@ -694,7 +682,6 @@ export class AemoData implements DurableObject {
     offset: number
   ): Response {
     try {
-      // We'll build a base query for counting total
       let countQuery = `
         SELECT COUNT(*) as total_count
         FROM market_interval_data
@@ -707,8 +694,10 @@ export class AemoData implements DurableObject {
         countValues.push(regionParam);
       }
 
-      // Execute the count query
-      const countCursor = this.sql.exec<{ total_count: number }>(countQuery, ...countValues);
+      const countCursor = this.sql.exec<{ total_count: number }>(
+        countQuery,
+        ...countValues
+      );
       const countArr = countCursor.toArray();
       let totalCount = 0;
       if (countArr.length > 0 && typeof countArr[0].total_count === "number") {
@@ -762,10 +751,10 @@ export class AemoData implements DurableObject {
       const rowCount = rowArr.length;
       this.log("DEBUG", `queryRange: Retrieved ${rowCount} row(s).`);
 
-      // Transform rows to text-based settlement time
       const transformed = rowArr.map((row) => ({
-        settlement:
-          row.settlement_ts == null ? null : new Date(row.settlement_ts).toISOString(),
+        settlement: row.settlement_ts == null
+          ? null
+          : new Date(row.settlement_ts).toISOString(),
         regionid: row.regionid,
         region: row.region,
         market_name: row.market_name,
@@ -795,7 +784,6 @@ export class AemoData implements DurableObject {
         headers: { "content-type": "application/json" },
       });
 
-      // Pagination headers
       const pageNumber = Math.floor(offset / limit) + 1;
       const totalPages = Math.ceil(totalCount / limit);
 
@@ -816,8 +804,8 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * queryLatestRecords: fetches the most recent record for every unique regionid in the NEM
-   * (or, if regionParam is provided, the most recent for that region only), returning them
+   * queryLatestRecords: fetches the most recent record for every unique regionid (in the NEM)
+   * or, if regionParam is provided, the most recent for that region only, returning them
    * in descending order by settlement_ts. Also sets pagination headers for consistency.
    */
   private queryLatestRecords(
@@ -826,7 +814,6 @@ export class AemoData implements DurableObject {
     offset: number
   ): Response {
     try {
-      // Count how many distinct "latest" entries we have
       let countSql = `
         SELECT COUNT(*) as total_count FROM (
           SELECT t.settlement_ts, t.regionid
@@ -853,7 +840,6 @@ export class AemoData implements DurableObject {
         totalCount = countArr[0].total_count;
       }
 
-      // Get the actual rows
       let query = `
         SELECT t.settlement_ts,
                t.regionid,
@@ -901,12 +887,11 @@ export class AemoData implements DurableObject {
       const resultCursor = this.sql.exec<MarketIntervalRecord>(query, ...values);
       const rowArr = resultCursor.toArray();
       const rowCount = rowArr.length;
-      this.log("DEBUG", `queryLatestRecords: retrieved ${rowCount} row(s).`);
 
-      // Transform
       const transformed = rowArr.map((row) => ({
-        settlement:
-          row.settlement_ts == null ? null : new Date(row.settlement_ts).toISOString(),
+        settlement: row.settlement_ts == null
+          ? null
+          : new Date(row.settlement_ts).toISOString(),
         regionid: row.regionid,
         region: row.region,
         market_name: row.market_name,
@@ -936,7 +921,6 @@ export class AemoData implements DurableObject {
         headers: { "content-type": "application/json" },
       });
 
-      // Pagination headers
       const pageNumber = Math.floor(offset / limit) + 1;
       const totalPages = Math.ceil(totalCount / limit);
 
@@ -957,17 +941,6 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * parseHeaders => parse from environment to record<string, string>, ignoring errors.
-   */
-  private parseHeaders(raw: string): Record<string, string> {
-    try {
-      return raw.trim() ? JSON.parse(raw) : {};
-    } catch {
-      return {};
-    }
-  }
-
-  /**
    * parseLocalBrisbaneMs => forcibly appends +10:00 if no timezone found,
    * then parse. Returns ms or NaN if parse fails.
    */
@@ -975,16 +948,29 @@ export class AemoData implements DurableObject {
     const hasOffsetRegex = /[Zz]|[\+\-]\d{2}:?\d{2}(\s*\(.*\))?$/;
     let adjusted = (dateStr || "").trim();
     if (!hasOffsetRegex.test(adjusted)) {
-      // Assume Brisbane time +10:00
-      adjusted += "+10:00";
+      adjusted += "+10:00"; // Assume Brisbane time
     }
 
     const ms = Date.parse(adjusted);
     if (Number.isNaN(ms)) {
-      this.log("ERROR", `parseLocalBrisbaneMs: parse failed => original="${dateStr}", adjusted="${adjusted}"`);
+      this.log(
+        "ERROR",
+        `parseLocalBrisbaneMs: parse failed => original="${dateStr}", adjusted="${adjusted}"`
+      );
       return NaN;
     }
     return ms;
+  }
+
+  /**
+   * parseHeaders => parse from environment to Record<string, string>, ignoring errors.
+   */
+  private parseHeaders(raw: string): Record<string, string> {
+    try {
+      return raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
   }
 
   /**
