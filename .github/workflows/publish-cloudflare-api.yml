@@ -234,7 +234,7 @@ jobs:
           preCommands: |
             echo "$SIGNING_KEYS" | yarn dlx wrangler secret put SIGNING_KEYS --config=workers/aemo-data-logger/wrangler.api.toml --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api
             echo "$CLIENT_IDS" | yarn dlx wrangler secret put CLIENT_IDS --config=workers/aemo-data-logger/wrangler.api.toml --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api
-          command: yarn dlx wrangler whoami
+          command: whoami
         env:
           SIGNING_KEYS: ${{ secrets.API_SIGNING_KEYS }}
           CLIENT_IDS: ${{ vars.API_CLIENT_IDS }}
@@ -249,7 +249,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: |
-            yarn dlx wrangler deploy --config=workers/aemo-data-logger/wrangler.api.toml
+            deploy --config=workers/aemo-data-logger/wrangler.api.toml
             --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api 
             --upload-source-maps
             --var LOG_LEVEL=${{ vars.API_LOG_LEVEL }}
