@@ -220,24 +220,6 @@ jobs:
       #     CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       ##########################################################################
-      # 4) Ensure the secrets (SIGNING_KEYS, CLIENT_IDS) are set.
-      #    We'll use Wrangler to store them. This ensures:
-      #      4. Ensure that the secrets SIGNING_KEYS, CLIENT_IDS are correctly set.
-      ##########################################################################
-      - name: Ensure Worker Secrets
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          secrets: |
-            SIGNING_KEYS
-            CLIENT_IDS
-        env:
-          # The actual secret values
-          SIGNING_KEYS: ${{ secrets.API_SIGNING_KEYS }}
-          CLIENT_IDS: ${{ vars.API_CLIENT_IDS }}
-
-      ##########################################################################
       # 5) Ensure environment variables (LOG_LEVEL, AEMO_API_URL, etc.) are set.
       #    We'll do this with `wrangler var set` commands in preCommands, but
       #    we can run `publish` at the end as well. The step ensures:
@@ -250,18 +232,12 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           preCommands: |
-            wrangler var set LOG_LEVEL "$API_LOG_LEVEL" --env=api
-            wrangler var set AEMO_API_URL "$AEMO_API_URL" --env=api
-            wrangler var set AEMO_API_HEADERS "$AEMO_API_HEADERS" --env=api
-            wrangler var set RATE_LIMIT_MAX "$API_RATE_LIMIT_MAX" --env=api
-            wrangler var set RATE_LIMIT_WINDOW_SEC "$API_RATE_LIMIT_WINDOW_SEC" --env=api
+            echo "$SIGNING_KEYS" | wrangler secret put SIGNING_KEYS --config=workers/aemo-data-logger/wrangler.api.toml --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api
+            echo "$CLIENT_IDS" | wrangler secret put CLIENT_IDS --config=workers/aemo-data-logger/wrangler.api.toml --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api
           command: whoami
         env:
-          API_LOG_LEVEL: ${{ vars.API_LOG_LEVEL }}
-          AEMO_API_URL: ${{ vars.AEMO_API_URL }}
-          AEMO_API_HEADERS: ${{ vars.AEMO_API_HEADERS }}
-          API_RATE_LIMIT_MAX: ${{ vars.API_RATE_LIMIT_MAX }}
-          API_RATE_LIMIT_WINDOW_SEC: ${{ vars.API_RATE_LIMIT_WINDOW_SEC }}
+          SIGNING_KEYS: ${{ secrets.API_SIGNING_KEYS }}
+          CLIENT_IDS: ${{ vars.API_CLIENT_IDS }}
 
       ##########################################################################
       # 6) Deploy the API to Production using Wrangler.
@@ -272,4 +248,12 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --config=workers/aemo-data-logger/wrangler.api.toml --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api --upload-source-maps
+          command: |
+            deploy --config=workers/aemo-data-logger/wrangler.api.toml
+            --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api 
+            --upload-source-maps
+            --var LOG_LEVEL=${{ vars.API_LOG_LEVEL }}
+            --var AEMO_API_URL=${{ vars.AEMO_API_URL }}
+            --var AEMO_API_HEADERS=${{ vars.AEMO_API_HEADERS }}
+            --var RATE_LIMIT_MAX=${{ vars.API_RATE_LIMIT_MAX }}
+            --var RATE_LIMIT_WINDOW_SEC=${{ vars.API_RATE_LIMIT_WINDOW_SEC }}
