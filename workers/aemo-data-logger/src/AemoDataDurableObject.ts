@@ -103,7 +103,7 @@ export interface AemoApiResponse {
     SEMISCHEduledGENERATION?: string | number;   // Potential duplicates/typos
     SEMISCHEduledGENERATION?: string | number;
     SEMISCHEduledGENERATION?: string | number;
-    SEMISCHEcheduledGENERATION?: string | number;
+    SEMISCHEduledGENERATION?: string | number;
     SEMISCHECHEDULEDGENERATION?: string | number;
     APCFLAG?: string | number;
   }[];
@@ -605,7 +605,7 @@ export class AemoData implements DurableObject {
 
   /**
    * queryRange: returns rows for settlement_ts in [startMs..endMs], optional region filter,
-   * ordering asc/desc. If 0 rows => logs min & max boundaries.
+   * ordering asc/desc. If 0 rows => logs min & max boundary.
    */
   private queryRange(
     startMs: number,
@@ -662,7 +662,8 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * queryLatestRecords: fetches recent intervals in descending order, optional region filter.
+   * queryLatestRecords: fetches the most recent record for every unique regionid,
+   * or if regionParam is provided, the most recent record for that specific regionid.
    * If 0 rows => logs min & max for debug.
    */
   private queryLatestRecords(
@@ -672,17 +673,23 @@ export class AemoData implements DurableObject {
   ): Response {
     try {
       let query = `
-        SELECT settlement_ts, regionid, region, rrp, totaldemand, periodtype,
-               netinterchange, scheduledgeneration, semischeduledgeneration, apcflag
-        FROM aemo_five_min_data
+        SELECT t.settlement_ts, t.regionid, t.region, t.rrp, t.totaldemand,
+               t.periodtype, t.netinterchange, t.scheduledgeneration,
+               t.semischeduledgeneration, t.apcflag
+        FROM aemo_five_min_data t
+        JOIN (
+          SELECT regionid, MAX(settlement_ts) AS max_ts
+          FROM aemo_five_min_data
+          GROUP BY regionid
+        ) sub ON t.regionid = sub.regionid AND t.settlement_ts = sub.max_ts
       `;
       const values: (number | string)[] = [];
 
       if (regionParam) {
-        query += " WHERE regionid = ?";
+        query += " WHERE t.regionid = ?";
         values.push(regionParam);
       }
-      query += ` ORDER BY settlement_ts DESC LIMIT ? OFFSET ?`;
+      query += ` ORDER BY t.settlement_ts DESC LIMIT ? OFFSET ?`;
       values.push(limit, offset);
 
       this.log("DEBUG", `queryLatestRecords: Final SQL="${query.trim()}"`);
