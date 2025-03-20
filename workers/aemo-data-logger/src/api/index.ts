@@ -77,24 +77,36 @@ export default {
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // If this is a preflight request, respond immediately with CORS headers
+    if (request.method === "OPTIONS") {
+      return handleOptionsRequest(request, env);
+    }
+
     // First, enforce rate limit
     const rateLimitResult = await checkRateLimit(request, env);
     if (!rateLimitResult.allowed) {
-      return new Response("Too Many Requests", { status: 429 });
+      const resp = new Response("Too Many Requests", { status: 429 });
+      return addCorsHeaders(request, env, resp);
     }
 
     const url = new URL(request.url);
+
     if (url.pathname === "/.well-known/jwks.json") {
-      return this.handleJwks(env);
+      const r = await this.handleJwks(env);
+      return addCorsHeaders(request, env, r);
     } else if (url.pathname === "/token" && request.method === "POST") {
-      return this.handleTokenRequest(request, env);
+      const r = await this.handleTokenRequest(request, env);
+      return addCorsHeaders(request, env, r);
     } else if (url.pathname === "/refresh" && request.method === "POST") {
-      return this.handleRefreshRequest(request, env);
+      const r = await this.handleRefreshRequest(request, env);
+      return addCorsHeaders(request, env, r);
     } else if (url.pathname === "/data" && request.method === "GET") {
-      return this.handleDataRequest(request, env);
+      const r = await this.handleDataRequest(request, env);
+      return addCorsHeaders(request, env, r);
     }
 
-    return new Response("Not found", { status: 404 });
+    const resp = new Response("Not found", { status: 404 });
+    return addCorsHeaders(request, env, resp);
   },
 
   /**
@@ -360,7 +372,6 @@ function getOrCreateSessionId(request: Request): string {
   return "no-session";
 }
 
-
 /** Helper to convert log level strings to numeric priority. */
 function getLogPriority(level: string): number {
   switch (level.toUpperCase()) {
@@ -369,6 +380,57 @@ function getLogPriority(level: string): number {
     case 'WARN':  return 3;
     case 'ERROR': return 4;
     default:      return 99; // 'NONE' or unknown
+  }
+}
+
+/**
+ * Handle OPTIONS preflight. Returns a 204 response with CORS headers if the origin is allowed.
+ */
+function handleOptionsRequest(request: Request, env: Env): Response {
+  const origin = request.headers.get("Origin") || "";
+  const allowedOrigins = parseAllowedOrigins(env.APP_ALLOWED_ORIGINS || "[]");
+  const resp = new Response(null, { status: 204 });
+
+  // Always set Vary so that different Origin requests are not cached as one
+  resp.headers.set("Vary", "Origin");
+
+  if (allowedOrigins.includes(origin)) {
+    resp.headers.set("Access-Control-Allow-Origin", origin);
+  }
+  resp.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  // You can adapt Allow-Headers as needed for your app
+  resp.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  resp.headers.set("Access-Control-Max-Age", "86400");
+
+  return resp;
+}
+
+/**
+ * Adds the CORS headers to the final response if the request's Origin is in the allowed list.
+ */
+function addCorsHeaders(request: Request, env: Env, response: Response): Response {
+  const origin = request.headers.get("Origin") || "";
+  const allowedOrigins = parseAllowedOrigins(env.APP_ALLOWED_ORIGINS || "[]");
+  if (allowedOrigins.includes(origin)) {
+    response.headers.set("Access-Control-Allow-Origin", origin);
+    response.headers.set("Vary", "Origin");
+  }
+  return response;
+}
+
+/**
+ * Parse the APP_ALLOWED_ORIGINS variable, which may be a JSON array string
+ * or an empty/fallback string. Returns an array of domains.
+ */
+function parseAllowedOrigins(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map((o) => String(o).trim()).filter(Boolean);
+    }
+    return [];
+  } catch {
+    return [];
   }
 }
 
