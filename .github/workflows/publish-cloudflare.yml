@@ -142,12 +142,14 @@ jobs:
           # and set up the base URL for the API
           echo "VITE_APP_CLIENT_ID=$(echo '${{ vars.API_CLIENT_IDS }}' | jq -r '.[0]')" >> $GITHUB_ENV
           echo "VITE_API_URL=https://api.${{ vars.CLOUDFLARE_DOMAIN_NAME }}" >> $GITHUB_ENV
+          echo "VITE_APP_URL=https://${{ vars.CLOUDFLARE_DOMAIN_NAME }}" >> $GITHUB_ENV
 
       - name: Build frontend
         run: yarn workspace frontend build
         env:
           VITE_APP_CLIENT_ID: ${{ env.VITE_APP_CLIENT_ID }}
           VITE_API_URL: ${{ env.VITE_API_URL }}
+          VITE_APP_URL: ${{ env.VITE_APP_URL }}
 
       ############################################################################
       # 4) Deploy to Cloudflare Pages using Wrangler
