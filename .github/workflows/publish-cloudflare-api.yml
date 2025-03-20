@@ -244,16 +244,17 @@ jobs:
       #    This final step publishes the Worker with the updated settings.
       ##########################################################################
       - name: Final Deploy to Production
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: |
-            deploy --config=workers/aemo-data-logger/wrangler.api.toml \
-            --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api \
-            --upload-source-maps \
-            --var LOG_LEVEL=${{ vars.API_LOG_LEVEL }} \
-            --var AEMO_API_URL=${{ vars.AEMO_API_URL }} \
-            --var AEMO_API_HEADERS=${{ vars.AEMO_API_HEADERS }} \
-            --var RATE_LIMIT_MAX=${{ vars.API_RATE_LIMIT_MAX }} \
-            --var RATE_LIMIT_WINDOW_SEC=${{ vars.API_RATE_LIMIT_WINDOW_SEC }}
+        run: |
+          yarn dlx wrangler --config=workers/aemo-data-logger/wrangler.api.toml \
+          --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api \
+          --upload-source-maps \
+          --var LOG_LEVEL=${{ vars.API_LOG_LEVEL }} \
+          --var AEMO_API_URL=${{ vars.AEMO_API_URL }} \
+          --var AEMO_API_HEADERS=${{ vars.AEMO_API_HEADERS }} \
+          --var RATE_LIMIT_MAX=${{ vars.API_RATE_LIMIT_MAX }} \
+          --var RATE_LIMIT_WINDOW_SEC=${{ vars.API_RATE_LIMIT_WINDOW_SEC }}
+        env:
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
