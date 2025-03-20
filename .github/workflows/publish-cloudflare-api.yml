@@ -33,12 +33,6 @@ jobs:
           yarn config set enableImmutableInstalls true
 
       ##########################################################################
-      # (Prerequisite) Install Wrangler globally for usage in subsequent steps
-      ##########################################################################
-      - name: Install Wrangler
-        run: yarn global add wrangler@latest
-
-      ##########################################################################
       # 2) Verify if the Worker exists. If not, create it with Wrangler.
       #
       #    We use "actions/github-script" + X-Auth-Key approach to check existence
@@ -84,7 +78,7 @@ jobs:
 
                 const execSync = require('child_process').execSync;
                 try {
-                    execSync(`wrangler deploy --config=workers/aemo-data-logger/wrangler.api.toml --name=${workerName} --upload-source-maps`, { stdio: 'inherit' });
+                    execSync(yarn dlx wrangler deploy --config=workers/aemo-data-logger/wrangler.api.toml --name=${workerName} --upload-source-maps`, { stdio: 'inherit' });
                     console.log(`Created Worker '${workerName}' via Wrangler deploy.`);
                 } catch (err) {
                     throw new Error(`Failed to create Worker service '${workerName}' via Wrangler.\nError: ${err.message}`);
