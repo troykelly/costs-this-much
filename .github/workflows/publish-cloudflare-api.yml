@@ -227,17 +227,16 @@ jobs:
       #         RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_SEC are correctly set.
       ##########################################################################
       - name: Ensure Env Vars
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          preCommands: |
-            echo "$SIGNING_KEYS" | yarn dlx wrangler secret put SIGNING_KEYS --config=workers/aemo-data-logger/wrangler.api.toml --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api
-            echo "$CLIENT_IDS" | yarn dlx wrangler secret put CLIENT_IDS --config=workers/aemo-data-logger/wrangler.api.toml --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api
-          command: whoami
+        run: |
+          echo "$SIGNING_KEYS" | yarn dlx wrangler secret put SIGNING_KEYS --config=workers/aemo-data-logger/wrangler.api.toml --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api
+          echo "$CLIENT_IDS" | yarn dlx wrangler secret put CLIENT_IDS --config=workers/aemo-data-logger/wrangler.api.toml --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api
         env:
           SIGNING_KEYS: ${{ secrets.API_SIGNING_KEYS }}
           CLIENT_IDS: ${{ vars.API_CLIENT_IDS }}
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
 
       ##########################################################################
       # 6) Deploy the API to Production using Wrangler.
