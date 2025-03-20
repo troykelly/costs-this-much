@@ -77,8 +77,8 @@ jobs:
                 // For brevity, we'll rely on your existing wrangler.api.toml configuration.
                 const execSync = require('child_process').execSync;
                 try {
-                    execSync('wrangler publish --env=api', { stdio: 'inherit' });
-                    console.log(`Created Worker '${workerName}' via Wrangler publish.`);
+                    execSync(`wrangler deploy --config=workers/aemo-data-logger/wrangler.api.toml --name=${workerName} --upload-source-maps`, { stdio: 'inherit' });
+                    console.log(`Created Worker '${workerName}' via Wrangler deploy.`);
                 } catch (err) {
                     throw new Error(`Failed to create Worker service '${workerName}' via Wrangler.\nError: ${err.message}`);
                 }
@@ -219,4 +219,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: publish --env=api
+          command: deploy --config=workers/aemo-data-logger/wrangler.api.toml --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api --upload-source-maps
