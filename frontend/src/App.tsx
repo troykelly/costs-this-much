@@ -433,8 +433,9 @@ const App: React.FC = () => {
       setHighestScenarioTimestamp(maxScenTS);
 
       setLoading(false);
-    } catch (err: any) {
-      setError(err.message || 'Failed to retrieve local data.');
+    } catch (err) {
+      // Handle any type of error safely
+      setError(err instanceof Error ? err.message : String(err));
       setLoading(false);
       setRrpCentsPerKWh(0);
       setFinalRateCents(0);
@@ -478,8 +479,8 @@ const App: React.FC = () => {
           }
         }, 5 * 60 * 1000);
 
-      } catch (err: any) {
-        setError(err.message || 'Failed to initialise data from our API.');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
         setLoading(false);
       }
     })();
@@ -576,7 +577,7 @@ const App: React.FC = () => {
       {/* Header info row */}
       <Box sx={{ borderBottom: '1px solid #CCC', backgroundColor: '#fff', padding: '1rem' }}>
         <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center' }}>
-          {/* Region block */}
+          {/* Region block - replaced the dangerous SVG with a placeholder to avoid path errors */}
           <Box
             sx={{
               display: 'flex',
@@ -594,54 +595,10 @@ const App: React.FC = () => {
             >
               {regionNameMap[regionKey] || regionKey.toUpperCase()}
             </Typography>
-            <Box
-              sx={{ mt: 1 }}
-              dangerouslySetInnerHTML={{ __html: (() => {
-                const svgMap: Record<string, string> = {
-                  nsw: `
-<svg width="80" height="60" viewBox="0 0 442.48889 415.55103" xmlns="http://www.w3.org/2000/svg">
-  <path fill="lightblue" stroke="#333" stroke-width="2"
-     d="m 402.68219,327.7504 ... (NSW path omitted for brevity) ... z"
-     title="New South Wales"
-     id="AU-NSW" />
-</svg>
-                  `,
-                  qld: `
-<svg width="80" height="60" viewBox="0 0 442.48889 415.55103" xmlns="http://www.w3.org/2000/svg">
-  <path fill="lightblue" stroke="#333" stroke-width="2"
-    d="m 402.68219,140.4104 ... (QLD path omitted) ... z"
-     title="Queensland"
-     id="AU-QLD" />
-</svg>
-                  `,
-                  sa: `
-<svg width="80" height="60" viewBox="0 0 442.48889 415.55103" xmlns="http://www.w3.org/2000/svg">
-  <path fill="lightblue" stroke="#333" stroke-width="2"
-    d="m 254.26219,283.5504 ... (SA path omitted) ... z"
-     title="South Australia"
-     id="AU-SA" />
-</svg>
-                  `,
-                  tas: `
-<svg width="80" height="60" viewBox="0 0 442.48889 415.55103" xmlns="http://www.w3.org/2000/svg">
-  <path fill="lightblue" stroke="#333" stroke-width="2"
-    d="m 369.45219,414.7604 ... (TAS path omitted) ... z"
-     title="Tasmania"
-      id="AU-TAS"/>
-</svg>
-                  `,
-                  vic: `
-<svg width="80" height="60" viewBox="0 0 442.48889 415.55103" xmlns="http://www.w3.org/2000/svg">
-  <path fill="lightblue" stroke="#333" stroke-width="2"
-    d="m 398.35219,330.7904 ... (VIC path omitted) ... z"
-     title="Victoria"
-     id="AU-VIC" />
-</svg>
-                  `
-                };
-                return svgMap[regionKey] || '<svg width="80" height="60"></svg>';
-              })() }}
-            />
+            {/* Minimal placeholder SVG to remove path error */}
+            <Box sx={{ mt: 1 }}>
+              <svg width="80" height="60" />
+            </Box>
             {usedIntervalDate && (
               <Typography variant="caption" sx={{ mt: 1, color: '#555' }}>
                 Last interval: {formatIntervalDate(usedIntervalDate)}

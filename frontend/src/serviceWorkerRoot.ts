@@ -89,7 +89,7 @@ self.addEventListener('activate', (event) => {
  * Fetch event: Not used for offline caching. We rely on message-based access.
  */
 self.addEventListener('fetch', (_event) => {
-  // No fetch override is provided here. 
+  // No fetch override is provided here.
 });
 
 /**
@@ -135,7 +135,7 @@ self.addEventListener('message', async (evt: MessageEvent) => {
     evt.source?.postMessage?.({
       requestId: data.requestId,
       status: 'error',
-      message: err?.message || String(err)
+      message: err instanceof Error ? err.message : String(err)
     });
   }
 });
@@ -241,7 +241,7 @@ async function fetchAndStoreRange(startMs: number, endMs: number): Promise<void>
     }
     await storeIntervals(data);
 
-    const xHasNext = resp.headers.get('X-Has-Next-Page');
+    const xHasNext = (resp.headers.get('X-Has-Next-Page') || '').trim().toLowerCase();
     hasNextPage = xHasNext === 'true';
     offset += data.length;
   }

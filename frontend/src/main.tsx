@@ -32,8 +32,26 @@ if (!rootElement) {
   throw new Error('Could not find root element to mount to.');
 }
 
-ReactDOM.createRoot(rootElement).render(
+const root = ReactDOM.createRoot(rootElement);
+root.render(
   <React.StrictMode>
     <App />
   </React.StrictMode>
 );
+
+// Attempt service worker registration in dev or production
+if ('serviceWorker' in navigator) {
+  // We use VITE_APP_URL as the root domain for the service worker script
+  const rootURL = import.meta.env.VITE_APP_URL || '';
+  const swScriptURL = `${rootURL.replace(/\/+$/, '')}/sw.js`;
+  const scopeURL = `${rootURL.replace(/\/+$/, '')}/`;
+
+  navigator.serviceWorker
+    .register(swScriptURL, { scope: scopeURL })
+    .then(() => {
+      // Service worker registered
+    })
+    .catch((err) => {
+      console.error('SW registration failed:', err);
+    });
+}
