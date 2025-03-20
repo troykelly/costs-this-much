@@ -7,15 +7,17 @@
  * Endpoints:
  *   • POST /sync — For scheduled ingestion of data from AEMO.
  *   • GET /range — For client-based data retrieval, with optional filters.
+ *   • POST /testInsertThenRead — For debugging only; inserts a row, then queries.
  *
  * This version adds:
- *   1. Even more robust debug logging — including logs for SQL queries, 
- *      bound variables, and row counts. 
- *   2. Additional constructor debug to verify table existence, row counts, 
- *      and first/last records in the table. 
- *   3. If no rows return from queries, a min/max boundary check is performed 
- *      to understand if the table is truly empty, or if filter conditions 
+ *   1. Even more robust debug logging — including logs for SQL queries,
+ *      bound variables, and row counts.
+ *   2. Additional constructor debug to verify table existence, row counts,
+ *      and first/last records in the table.
+ *   3. If no rows return from queries, a min/max boundary check is performed
+ *      to understand if the table is truly empty, or if filter conditions
  *      exclude all data.
+ *   4. A new “/testInsertThenRead” endpoint to debug direct insert+read flow.
  */
 
 import type {
@@ -70,7 +72,7 @@ export interface IntervalRecord extends Record<string, SqlStorageValue> {
 }
 
 /**
- * Data structure for a single 5-minute interval from AEMO, 
+ * Data structure for a single 5-minute interval from AEMO,
  * after conversion to ms-based timestamps.
  */
 export interface AemoInterval {
@@ -228,9 +230,10 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * Router for fetch requests: 
+   * Router for fetch requests:
    *  - POST /sync => handleSync
    *  - GET /range => handleRangeRequest
+   *  - POST /testInsertThenRead => handleTestInsertThenRead (direct debug)
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -240,6 +243,8 @@ export class AemoData implements DurableObject {
       return this.handleSync();
     } else if (request.method === "GET" && url.pathname === "/range") {
       return this.handleRangeRequest(url);
+    } else if (request.method === "POST" && url.pathname === "/testInsertThenRead") {
+      return this.handleTestInsertThenRead();
     }
 
     this.log("DEBUG", "No matching route found in AemoDataDurableObject.");
@@ -523,6 +528,74 @@ export class AemoData implements DurableObject {
 
     } catch (err) {
       this.log("ERROR", `handleRangeRequest error => ${String(err)}`);
+      return new Response(JSON.stringify({ error: String(err) }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
+
+  /**
+   * Debug-only route: /testInsertThenRead
+   * Inserts a brand-new row with a random settlement_ts, then immediately queries.
+   * Returns the newly fetched rows, so you can confirm direct read works in one request.
+   */
+  private async handleTestInsertThenRead(): Promise<Response> {
+    try {
+      // Insert a brand-new row every time
+      const uniqueTs = Date.now() + Math.floor(Math.random() * 100000);
+      const region = "DEBUG_MANUAL";
+      const rrp = 999.99;
+
+      this.sql.exec(
+        `
+        INSERT INTO aemo_five_min_data (
+          settlement_ts,
+          regionid,
+          region,
+          rrp,
+          totaldemand,
+          periodtype,
+          netinterchange,
+          scheduledgeneration,
+          semischeduledgeneration,
+          apcflag
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        uniqueTs,
+        region,
+        "TEST_REGION",
+        rrp,
+        0,
+        "DEBUG_PERIOD",
+        null,
+        null,
+        null,
+        null
+      );
+
+      // Immediately select rows (you can adjust as needed)
+      const result = this.sql.exec<IntervalRecord>(
+        `
+        SELECT settlement_ts, regionid, region, rrp
+        FROM aemo_five_min_data
+        ORDER BY settlement_ts DESC
+        LIMIT 5
+      `
+      );
+
+      return new Response(JSON.stringify({
+        message: "Inserted one row, now reading top 5 rows by settlement_ts:",
+        insertedTs: uniqueTs,
+        rows: result,
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    } catch (err) {
+      this.log("ERROR", `handleTestInsertThenRead error => ${String(err)}`);
       return new Response(JSON.stringify({ error: String(err) }), {
         status: 500,
         headers: { "content-type": "application/json" },
