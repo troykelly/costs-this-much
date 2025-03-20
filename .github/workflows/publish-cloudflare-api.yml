@@ -26,7 +26,7 @@ jobs:
         uses: actions/github-script@v6
         with:
           script: |
-            const fetch = require("node-fetch"); // Provided by GitHub Actions environment
+            # const fetch = require("node-fetch"); // Provided by GitHub Actions environment
 
             const token = process.env.CLOUDFLARE_API_TOKEN;
             const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
