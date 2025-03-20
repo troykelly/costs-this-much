@@ -1,23 +1,17 @@
 /**
- * @fileoverview Durable Object that stores AEMO intervals in a Cloudflare SQL-backed storage.
- *
- * IMPORTANT: AEMO data is typically UTC+10 (Brisbane time) for settlement,
- * and this DO stores timestamps in milliseconds (ms).
+ * @fileoverview Durable Object that stores electricity market intervals (initially AEMO's NEM data),
+ * including energy price, FCAS components, demand, and other properties needed for retail price
+ * calculations. The table schema is designed to be non-AEMO specific, enabling extension to other
+ * Australian or international markets in future.
  *
  * Endpoints:
- *   • POST /sync — For scheduled ingestion of data from AEMO.
+ *   • POST /sync — For scheduled ingestion of data from AEMO (ELEC_NEM_SUMMARY, ELEC_NEM_SUMMARY_PRICES).
  *   • GET /range — For client-based data retrieval, with optional filters.
  *   • POST /testInsertThenRead — For debugging only; inserts a row, then queries.
  *
- * This version adds:
- *   1. Even more robust debug logging — including logs for SQL queries,
- *      bound variables, and row counts.
- *   2. Additional constructor debug to verify table existence, row counts,
- *      and first/last records in the table.
- *   3. If no rows return from queries, a min/max boundary check is performed
- *      to understand if the table is truly empty, or if filter conditions
- *      exclude all data.
- *   4. A new “/testInsertThenRead” endpoint to debug direct insert+read flow.
+ * This refactor replaces the old "aemo_five_min_data" table with "market_interval_data," storing
+ * the richer set of fields (including FCAS components) from AEMO's ELEC_NEM_SUMMARY and
+ * ELEC_NEM_SUMMARY_PRICES. By design, these columns can be reused for other markets, such as WEM, WA, NT, etc.
  */
 
 import type {
@@ -50,59 +44,71 @@ function getLogPriority(level: string): number {
  * Environment for AemoData DO, referencing environment variables.
  */
 export interface AemoDataEnv {
-  AEMO_API_URL: string;     // e.g. "https://visualisations.aemo.com.au/aemo/apps/api/report/5MIN"
-  AEMO_API_HEADERS: string; // JSON string of headers: '{"Accept":"application/json"}'
-  LOG_LEVEL?: string;       // e.g. "DEBUG", "INFO", ...
+  AEMO_API_URL: string;         // e.g. "https://visualisations.aemo.com.au/aemo/apps/api/report/..."
+  AEMO_API_HEADERS: string;     // JSON string of headers: '{"Accept":"application/json"}'
+  LOG_LEVEL?: string;           // e.g. "DEBUG", "INFO", ...
 }
 
 /**
- * Record type for the "aemo_five_min_data" table. Timestamps in ms.
+ * Record type for the "market_interval_data" table. Timestamps in ms.
+ * The table is designed to store enough fields for potential
+ * electricity market expansions beyond AEMO NEM data.
  */
-export interface IntervalRecord extends Record<string, SqlStorageValue> {
-  settlement_ts: number | null;
-  regionid: string | null;
-  region: string | null;
-  rrp: number | null;
-  totaldemand: number | null;
-  periodtype: string | null;
-  netinterchange: number | null;
-  scheduledgeneration: number | null;
-  semischeduledgeneration: number | null;
-  apcflag: number | null;
-}
-
-/**
- * Data structure for a single 5-minute interval from AEMO,
- * after conversion to ms-based timestamps.
- */
-export interface AemoInterval {
-  settlementdate: string;
+export interface MarketIntervalRecord extends Record<string, SqlStorageValue> {
   settlement_ts: number;
   regionid: string;
-  rrp: number;
-  totaldemand: number | null;
-  periodtype: string | null;
-  netinterchange: number | null;
-  scheduledgeneration: number | null;
-  semischeduledgeneration: number | null;
-  apcflag: number | null;
+  region: string | null;
+  market_name: string;
+  energy_price: number | null;
+  price_status: string | null;
+  apc_flag: number | null;
+  market_suspended_flag: number | null;
+  total_demand: number | null;
+  net_interchange: number | null;
+  scheduled_generation: number | null;
+  semischeduled_generation: number | null;
+  interconnector_flows: string | null;
+  raise_reg_price: number | null;
+  lower_reg_price: number | null;
+  raise_1sec_price: number | null;
+  raise_6sec_price: number | null;
+  raise_60sec_price: number | null;
+  raise_5min_price: number | null;
+  lower_1sec_price: number | null;
+  lower_6sec_price: number | null;
+  lower_60sec_price: number | null;
+  lower_5min_price: number | null;
 }
 
 /**
- * Shape of the AEMO JSON response. We mainly care about the "5MIN" array.
+ * Extracted interval row from ELEC_NEM_SUMMARY plus FCAS data from ELEC_NEM_SUMMARY_PRICES.
  */
-export interface AemoApiResponse {
-  "5MIN": {
-    SETTLEMENTDATE: string;
-    REGIONID: string;
-    RRP: string | number;
-    TOTALDEMAND?: string | number;
-    PERIODTYPE?: string;
-    NETINTERCHANGE?: string | number;
-    SCHEDULEDGENERATION?: string | number;
-    SEMISCHEDULEDGENERATION?: string | number;
-    APCFLAG?: string | number;
-  }[];
+interface CombinedIntervalRow {
+  settlement_ts: number;
+  regionid: string;
+  region: string;
+  market_name: string;                 // e.g. "NEM"
+  energy_price: number | null;
+  price_status: string | null;
+  apc_flag: number | null;
+  market_suspended_flag: number | null;
+  total_demand: number | null;
+  net_interchange: number | null;
+  scheduled_generation: number | null;
+  semischeduled_generation: number | null;
+  interconnector_flows: string | null;
+
+  // FCAS / ancillary service columns:
+  raise_reg_price: number | null;
+  lower_reg_price: number | null;
+  raise_1sec_price: number | null;
+  raise_6sec_price: number | null;
+  raise_60sec_price: number | null;
+  raise_5min_price: number | null;
+  lower_1sec_price: number | null;
+  lower_6sec_price: number | null;
+  lower_60sec_price: number | null;
+  lower_5min_price: number | null;
 }
 
 export class AemoData implements DurableObject {
@@ -123,29 +129,45 @@ export class AemoData implements DurableObject {
 
     // Check if our table exists. If not, create it. Then run debug checks.
     try {
-      this.log("DEBUG", "Attempting to verify existence of aemo_five_min_data table.");
-      this.sql.exec("SELECT 1 FROM aemo_five_min_data LIMIT 1;");
-      this.log("DEBUG", "Table aemo_five_min_data found. Skipping creation step.");
+      this.log("DEBUG", "Verifying existence of market_interval_data table.");
+      this.sql.exec("SELECT 1 FROM market_interval_data LIMIT 1;");
+      this.log("DEBUG", "Table market_interval_data found. Skipping creation step.");
     } catch (err) {
-      this.log("INFO", `Creating table & indexes - reason: ${String(err)}`);
+      this.log(
+        "INFO",
+        `Creating table & indexes for market_interval_data - reason: ${String(err)}`
+      );
       this.sql.exec(`
-        CREATE TABLE aemo_five_min_data (
+        CREATE TABLE market_interval_data (
           settlement_ts             INTEGER NOT NULL,
           regionid                  TEXT    NOT NULL,
           region                    TEXT,
-          rrp                       REAL,
-          totaldemand              REAL,
-          periodtype               TEXT,
-          netinterchange           REAL,
-          scheduledgeneration      REAL,
-          semischeduledgeneration  REAL,
-          apcflag                  REAL,
-          PRIMARY KEY (settlement_ts, regionid)
+          market_name               TEXT    NOT NULL,
+          energy_price              REAL,
+          price_status              TEXT,
+          apc_flag                  REAL,
+          market_suspended_flag     REAL,
+          total_demand              REAL,
+          net_interchange           REAL,
+          scheduled_generation      REAL,
+          semischeduled_generation  REAL,
+          interconnector_flows      TEXT,
+          raise_reg_price           REAL,
+          lower_reg_price           REAL,
+          raise_1sec_price          REAL,
+          raise_6sec_price          REAL,
+          raise_60sec_price         REAL,
+          raise_5min_price          REAL,
+          lower_1sec_price          REAL,
+          lower_6sec_price          REAL,
+          lower_60sec_price         REAL,
+          lower_5min_price          REAL,
+          PRIMARY KEY (settlement_ts, regionid, market_name)
         );
-        CREATE INDEX idx_aemo_five_min_data_regionid_ts
-          ON aemo_five_min_data (regionid, settlement_ts);
-        CREATE INDEX idx_aemo_five_min_data_ts
-          ON aemo_five_min_data (settlement_ts);
+        CREATE INDEX idx_market_data_ts
+          ON market_interval_data (settlement_ts);
+        CREATE INDEX idx_market_data_region
+          ON market_interval_data (regionid, settlement_ts);
       `);
     }
 
@@ -156,7 +178,7 @@ export class AemoData implements DurableObject {
    * Router for fetch requests:
    *  - POST /sync => handleSync
    *  - GET /range => handleRangeRequest
-   *  - POST /testInsertThenRead => handleTestInsertThenRead (direct debug)
+   *  - POST /testInsertThenRead => handleTestInsertThenRead
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -175,16 +197,18 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * handleSync - handles scheduled ingestion from AEMO.
+   * handleSync - handles scheduled ingestion from AEMO.  
+   * Expects a JSON structure containing:
+   *   ELEC_NEM_SUMMARY:      an array of objects (one per region)
+   *   ELEC_NEM_SUMMARY_PRICES: an array of objects (FCAS details, keyed by region)
    */
   private async handleSync(): Promise<Response> {
-    this.log("INFO", "handleSync: Step 1: Attempting to download AEMO data...");
+    this.log("INFO", "handleSync: Step 1: Attempting to download new AEMO data...");
 
     // Prepare request
-    const requestBody = { timeScale: ["5MIN"] };
+    const requestBody = {}; // No special body needed for this example, adjust as needed
     const headers = this.parseHeaders(this.env.AEMO_API_HEADERS);
     this.log("DEBUG", `handleSync: Request headers: ${JSON.stringify(headers)}`);
-    this.log("DEBUG", `handleSync: Request body: ${JSON.stringify(requestBody)}`);
 
     // Fetch from AEMO
     let resp: Response;
@@ -211,72 +235,123 @@ export class AemoData implements DurableObject {
     }
 
     // Try JSON parse
-    this.log("INFO", "handleSync: Step 2: Checking the AEMO data for intervals...");
-    let data: AemoApiResponse;
+    this.log("INFO", "handleSync: Step 2: Checking the returned data structure...");
+    let data: any;
     try {
-      data = (await resp.json()) as AemoApiResponse;
+      data = await resp.json();
     } catch (err) {
       const msg = `handleSync: invalid JSON => ${(err as Error).message}`;
       this.log("ERROR", msg);
       return new Response(msg, { status: 500 });
     }
 
-    if (!Array.isArray(data["5MIN"])) {
-      const msg = `handleSync: no valid "5MIN" array in response.`;
+    // Validate presence of the arrays
+    if (!Array.isArray(data.ELEC_NEM_SUMMARY)) {
+      const msg = `handleSync: missing or invalid ELEC_NEM_SUMMARY array.`;
+      this.log("WARN", msg);
+      return new Response(msg, { status: 500 });
+    }
+    if (!Array.isArray(data.ELEC_NEM_SUMMARY_PRICES)) {
+      const msg = `handleSync: missing or invalid ELEC_NEM_SUMMARY_PRICES array.`;
       this.log("WARN", msg);
       return new Response(msg, { status: 500 });
     }
 
-    // Convert to intervals
-    this.log("INFO", "handleSync: parse intervals (Brisbane offset as needed)...");
-    const intervals: AemoInterval[] = data["5MIN"]
-      .map((item) => this.recordToInterval(item))
-      .filter(Boolean) as AemoInterval[];
+    this.log("INFO", "handleSync: Step 3: Parsing intervals and merging FCAS data...");
 
-    if (!intervals.length) {
-      const msg = `handleSync: no intervals found; skipping.`;
+    // Build a quick region => FCAS map from ELEC_NEM_SUMMARY_PRICES
+    const fcasMap = new Map<string, any>();
+    for (const p of data.ELEC_NEM_SUMMARY_PRICES) {
+      const r = String(p.REGIONID || "").trim();
+      if (r) {
+        fcasMap.set(r, p);
+      }
+    }
+
+    // Build combined records from ELEC_NEM_SUMMARY
+    const combinedRows: CombinedIntervalRow[] = [];
+    for (const item of data.ELEC_NEM_SUMMARY) {
+      const regionid = String(item.REGIONID || "").trim();
+      if (!regionid) {
+        // Skip invalid region
+        continue;
+      }
+      const settlement_ts = this.parseLocalBrisbaneMs(item.SETTLEMENTDATE);
+      if (Number.isNaN(settlement_ts)) {
+        this.log(
+          "ERROR",
+          `handleSync: invalid date parse => "${item.SETTLEMENTDATE}" => NaN`
+        );
+        continue;
+      }
+
+      // Merge FCAS data if it exists
+      let fc = fcasMap.get(regionid) || {};
+      // Construct a full row
+      const row: CombinedIntervalRow = {
+        settlement_ts,
+        regionid,
+        region: regionid, // For minimal changes, store regionid into 'region' column
+        market_name: "NEM", // Hard-coded to "NEM" in this example
+        energy_price: item.PRICE ?? null,
+        price_status: item.PRICE_STATUS ?? null,
+        apc_flag: item.APCFLAG ?? null,
+        market_suspended_flag: item.MARKETSUSPENDEDFLAG ?? null,
+        total_demand: item.TOTALDEMAND ?? null,
+        net_interchange: item.NETINTERCHANGE ?? null,
+        scheduled_generation: item.SCHEDULEDGENERATION ?? null,
+        semischeduled_generation: item.SEMISCHEDULEDGENERATION ?? null,
+        interconnector_flows: item.INTERCONNECTORFLOWS ?? null,
+
+        // FCAS columns from ELEC_NEM_SUMMARY_PRICES
+        raise_reg_price: fc.RAISEREGRRP ?? null,
+        lower_reg_price: fc.LOWERREGRRP ?? null,
+        raise_1sec_price: fc.RAISE1SECRRP ?? null,
+        raise_6sec_price: fc.RAISE6SECRRP ?? null,
+        raise_60sec_price: fc.RAISE60SECRRP ?? null,
+        raise_5min_price: fc.RAISE5MINRRP ?? null,
+        lower_1sec_price: fc.LOWER1SECRRP ?? null,
+        lower_6sec_price: fc.LOWER6SECRRP ?? null,
+        lower_60sec_price: fc.LOWER60SECRRP ?? null,
+        lower_5min_price: fc.LOWER5MINRRP ?? null,
+      };
+      combinedRows.push(row);
+    }
+
+    if (!combinedRows.length) {
+      const msg = `handleSync: no valid intervals found; skipping.`;
       this.log("WARN", msg);
       return new Response(msg, { status: 200 });
     }
 
-    // Identify earliest & latest
-    let earliest = intervals[0].settlement_ts;
-    let latest = intervals[0].settlement_ts;
-    for (const iv of intervals) {
-      if (iv.settlement_ts < earliest) earliest = iv.settlement_ts;
-      if (iv.settlement_ts > latest) latest = iv.settlement_ts;
+    // For insertion dedup, find earliest and latest from combined
+    let earliest = combinedRows[0].settlement_ts;
+    let latest = combinedRows[0].settlement_ts;
+    for (const row of combinedRows) {
+      if (row.settlement_ts < earliest) earliest = row.settlement_ts;
+      if (row.settlement_ts > latest) latest = row.settlement_ts;
     }
-
-    if (Number.isNaN(earliest) || Number.isNaN(latest)) {
-      const msg = "handleSync: found NaN timestamps. aborting insertion.";
-      this.log("ERROR", msg);
-      return new Response(msg, { status: 500 });
-    }
-
-    this.log(
-      "DEBUG",
-      `handleSync: earliest=${earliest}, latest=${latest}, totalIntervals=${intervals.length}`
-    );
 
     // Identify region IDs
-    const regionIds = [...new Set(intervals.map((i) => i.regionid))];
+    const regionIds = [...new Set(combinedRows.map((r) => r.regionid))];
+    this.log("DEBUG", `handleSync: earliest=${earliest}, latest=${latest}, total=${combinedRows.length}`);
+
+    // Check the DB for existing intervals in that range & same region(s)
     if (!regionIds.length) {
       const msg = "handleSync: intervals have no region IDs. skipping.";
       this.log("WARN", msg);
       return new Response(msg, { status: 200 });
     }
-    this.log("DEBUG", `handleSync: regionIds=${JSON.stringify(regionIds)}`);
-
-    // Get existing records
-    this.log("INFO", "handleSync: checking DB for existing intervals in that range...");
     const placeholders: string = regionIds.map(() => "?").join(", ");
     const selectSql = `
-      SELECT settlement_ts, regionid
-      FROM aemo_five_min_data
-      WHERE settlement_ts >= ? AND settlement_ts <= ?
+      SELECT settlement_ts, regionid, market_name
+      FROM market_interval_data
+      WHERE settlement_ts >= ?
+        AND settlement_ts <= ?
         AND regionid IN (${placeholders})
+        AND market_name = 'NEM'
     `;
-    const existingCursor = this.sql.exec<IntervalRecord>(
+    const existingCursor = this.sql.exec(
       selectSql,
       earliest,
       latest,
@@ -285,58 +360,85 @@ export class AemoData implements DurableObject {
     const existingRows = existingCursor.toArray();
     const existingKeys = new Set<string>();
     for (const row of existingRows) {
-      existingKeys.add(`${row.settlement_ts}-${row.regionid}`);
+      existingKeys.add(`${row.settlement_ts}-${row.regionid}-${row.market_name}`);
     }
+
     this.log(
       "DEBUG",
       `handleSync: found ${existingKeys.size} existing intervals in [${earliest},${latest}].`
     );
 
     // Insert missing
-    const missing: AemoInterval[] = [];
-    for (const iv of intervals) {
-      const k = `${iv.settlement_ts}-${iv.regionid}`;
-      if (!existingKeys.has(k)) {
-        missing.push(iv);
+    const missing: CombinedIntervalRow[] = [];
+    for (const r of combinedRows) {
+      const key = `${r.settlement_ts}-${r.regionid}-${r.market_name}`;
+      if (!existingKeys.has(key)) {
+        missing.push(r);
       }
     }
     this.log("DEBUG", `handleSync: missingCount=${missing.length}`);
 
     let insertedCount = 0;
-    for (const iv of missing) {
+    for (const r of missing) {
       const cursor = this.sql.exec(
         `
-          INSERT INTO aemo_five_min_data (
+          INSERT INTO market_interval_data (
             settlement_ts,
             regionid,
             region,
-            rrp,
-            totaldemand,
-            periodtype,
-            netinterchange,
-            scheduledgeneration,
-            semischeduledgeneration,
-            apcflag
+            market_name,
+            energy_price,
+            price_status,
+            apc_flag,
+            market_suspended_flag,
+            total_demand,
+            net_interchange,
+            scheduled_generation,
+            semischeduled_generation,
+            interconnector_flows,
+            raise_reg_price,
+            lower_reg_price,
+            raise_1sec_price,
+            raise_6sec_price,
+            raise_60sec_price,
+            raise_5min_price,
+            lower_1sec_price,
+            lower_6sec_price,
+            lower_60sec_price,
+            lower_5min_price
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT (settlement_ts, regionid)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (settlement_ts, regionid, market_name)
           DO NOTHING
         `,
-        iv.settlement_ts,
-        iv.regionid,
-        iv.regionid,
-        iv.rrp,
-        iv.totaldemand,
-        iv.periodtype,
-        iv.netinterchange,
-        iv.scheduledgeneration,
-        iv.semischeduledgeneration,
-        iv.apcflag
+        r.settlement_ts,
+        r.regionid,
+        r.region,
+        r.market_name,
+        r.energy_price,
+        r.price_status,
+        r.apc_flag,
+        r.market_suspended_flag,
+        r.total_demand,
+        r.net_interchange,
+        r.scheduled_generation,
+        r.semischeduled_generation,
+        r.interconnector_flows,
+        r.raise_reg_price,
+        r.lower_reg_price,
+        r.raise_1sec_price,
+        r.raise_6sec_price,
+        r.raise_60sec_price,
+        r.raise_5min_price,
+        r.lower_1sec_price,
+        r.lower_6sec_price,
+        r.lower_60sec_price,
+        r.lower_5min_price
       );
       insertedCount += cursor.rowsWritten;
     }
 
-    const msg = `handleSync: done. intervalsParsed=${intervals.length}, newlyInserted=${insertedCount}`;
+    const msg = `handleSync: done. intervalsParsed=${combinedRows.length}, newlyInserted=${insertedCount}`;
     this.log("INFO", msg);
     return new Response(msg, { status: 200 });
   }
@@ -347,7 +449,7 @@ export class AemoData implements DurableObject {
    *   - start/end => ascending
    *   - regionid => optional
    *   - limit/offset => paging
-   * if no parameters, fetch the latest intervals (one per region) in descending order.
+   * If no parameters, returns the most recent record for each region (descending) from market_interval_data.
    */
   private async handleRangeRequest(url: URL): Promise<Response> {
     this.log("DEBUG", "handleRangeRequest: invoked.");
@@ -366,10 +468,11 @@ export class AemoData implements DurableObject {
       const lastSecParam = url.searchParams.get("lastSec");
       const startParam = url.searchParams.get("start");
       const endParam = url.searchParams.get("end");
-      const regionParam = url.searchParams.get("regionid");
+      const regionParam = url.searchParams.get("regionid") || null;
       const nowMs = Date.now();
 
-      this.log("DEBUG", 
+      this.log(
+        "DEBUG",
         `handleRangeRequest: lastSec=${lastSecParam}, start=${startParam}, end=${endParam}, regionid=${regionParam}`
       );
 
@@ -392,6 +495,7 @@ export class AemoData implements DurableObject {
             headers: { "content-type": "application/json" },
           });
         }
+        // Arbitrary cap check
         if (lastSec > 604800) {
           const msg = "Requested range too large.";
           this.log("DEBUG", `handleRangeRequest error: ${msg}`);
@@ -442,7 +546,10 @@ export class AemoData implements DurableObject {
             headers: { "content-type": "application/json" },
           });
         }
-        this.log("DEBUG", `handleRangeRequest: explicit => startMs=${startMs}, endMs=${endMs}`);
+        this.log(
+          "DEBUG",
+          `handleRangeRequest: explicit => startMs=${startMs}, endMs=${endMs}`
+        );
         return this.queryRange(startMs, endMs, regionParam, true, limit, offset);
       }
 
@@ -461,49 +568,76 @@ export class AemoData implements DurableObject {
 
   /**
    * Debug-only route: /testInsertThenRead
-   * Inserts a brand-new row with a random settlement_ts, then immediately queries.
-   * Returns the newly fetched rows, so you can confirm direct read works in one request.
+   * Inserts a brand-new row with a random settlement_ts, then immediately queries
+   * the top 5 rows. Returns the newly fetched rows for quick verification.
    */
   private async handleTestInsertThenRead(): Promise<Response> {
     try {
       // Insert a brand-new row every time
       const uniqueTs = Date.now() + Math.floor(Math.random() * 100000);
       const region = "DEBUG_MANUAL";
-      const rrp = 999.99;
+      const price = 999.99;
 
       this.sql.exec(
         `
-        INSERT INTO aemo_five_min_data (
+        INSERT INTO market_interval_data (
           settlement_ts,
           regionid,
           region,
-          rrp,
-          totaldemand,
-          periodtype,
-          netinterchange,
-          scheduledgeneration,
-          semischeduledgeneration,
-          apcflag
+          market_name,
+          energy_price,
+          price_status,
+          apc_flag,
+          market_suspended_flag,
+          total_demand,
+          net_interchange,
+          scheduled_generation,
+          semischeduled_generation,
+          interconnector_flows,
+          raise_reg_price,
+          lower_reg_price,
+          raise_1sec_price,
+          raise_6sec_price,
+          raise_60sec_price,
+          raise_5min_price,
+          lower_1sec_price,
+          lower_6sec_price,
+          lower_60sec_price,
+          lower_5min_price
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
         uniqueTs,
         region,
-        "TEST_REGION",
-        rrp,
+        region,
+        "NEM",
+        price,
+        "FIRM",
         0,
-        "DEBUG_PERIOD",
+        0,
+        0,
+        0,
+        0,
+        0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
         null,
         null,
         null,
         null
       );
 
-      // Immediately select rows (you can adjust as needed)
-      const resultCursor = this.sql.exec<IntervalRecord>(
+      // Immediately select rows (limit=5)
+      const resultCursor = this.sql.exec<MarketIntervalRecord>(
         `
-        SELECT settlement_ts, regionid, region, rrp
-        FROM aemo_five_min_data
+        SELECT settlement_ts, regionid, region, market_name,
+               energy_price, price_status
+        FROM market_interval_data
         ORDER BY settlement_ts DESC
         LIMIT 5
       `
@@ -516,19 +650,27 @@ export class AemoData implements DurableObject {
           settlement: row.settlement_ts == null ? null : new Date(row.settlement_ts).toISOString(),
           regionid: row.regionid,
           region: row.region,
-          rrp: row.rrp,
+          market_name: row.market_name,
+          energy_price: row.energy_price,
+          price_status: row.price_status,
         };
       });
 
-      return new Response(JSON.stringify({
-        message: "Inserted one row, now reading top 5 rows by settlement_ts:",
-        inserted: new Date(uniqueTs).toISOString(),
-        rows: result,
-      }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-
+      return new Response(
+        JSON.stringify(
+          {
+            message: "Inserted one row, now reading top 5 rows by settlement_ts:",
+            inserted: new Date(uniqueTs).toISOString(),
+            rows: result,
+          },
+          null,
+          2
+        ),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
     } catch (err) {
       this.log("ERROR", `handleTestInsertThenRead error => ${String(err)}`);
       return new Response(JSON.stringify({ error: String(err) }), {
@@ -540,8 +682,7 @@ export class AemoData implements DurableObject {
 
   /**
    * queryRange: returns rows for settlement_ts in [startMs..endMs], optional region filter,
-   * ordering asc/desc. If 0 rows => logs min & max boundary.
-   * Now also sets pagination headers: 
+   * ordering asc/desc. If 0 rows => logs min & max boundary. Also sets pagination headers:
    *  X-Page, X-Limit, X-Total-Pages, X-Has-Next-Page, X-Total-Count
    */
   private queryRange(
@@ -556,8 +697,9 @@ export class AemoData implements DurableObject {
       // We'll build a base query for counting total
       let countQuery = `
         SELECT COUNT(*) as total_count
-        FROM aemo_five_min_data
+        FROM market_interval_data
         WHERE settlement_ts >= ? AND settlement_ts <= ?
+          AND market_name = 'NEM'
       `;
       const countValues: (number | string)[] = [startMs, endMs];
       if (regionParam) {
@@ -575,10 +717,33 @@ export class AemoData implements DurableObject {
 
       const orderBy = asc ? "ASC" : "DESC";
       let query = `
-        SELECT settlement_ts, regionid, region, rrp, totaldemand, periodtype,
-               netinterchange, scheduledgeneration, semischeduledgeneration, apcflag
-        FROM aemo_five_min_data
+        SELECT
+          settlement_ts,
+          regionid,
+          region,
+          market_name,
+          energy_price,
+          price_status,
+          apc_flag,
+          market_suspended_flag,
+          total_demand,
+          net_interchange,
+          scheduled_generation,
+          semischeduled_generation,
+          interconnector_flows,
+          raise_reg_price,
+          lower_reg_price,
+          raise_1sec_price,
+          raise_6sec_price,
+          raise_60sec_price,
+          raise_5min_price,
+          lower_1sec_price,
+          lower_6sec_price,
+          lower_60sec_price,
+          lower_5min_price
+        FROM market_interval_data
         WHERE settlement_ts >= ? AND settlement_ts <= ?
+          AND market_name = 'NEM'
       `;
       const values: (number | string)[] = [startMs, endMs];
       if (regionParam) {
@@ -592,32 +757,37 @@ export class AemoData implements DurableObject {
       this.log("DEBUG", `queryRange: Final SQL="${query.trim()}"`);
       this.log("DEBUG", `queryRange: Values=${JSON.stringify(values)}`);
 
-      const resultCursor = this.sql.exec<IntervalRecord>(query, ...values);
+      const resultCursor = this.sql.exec<MarketIntervalRecord>(query, ...values);
       const rowArr = resultCursor.toArray();
       const rowCount = rowArr.length;
       this.log("DEBUG", `queryRange: Retrieved ${rowCount} row(s).`);
 
-      if (rowCount === 0) {
-        this.log("DEBUG", "queryRange: No rows");
-      } else {
-        const sample = rowArr[0];
-        this.log("DEBUG", `queryRange: sampleRow => ${JSON.stringify(sample)}`);
-      }
-
-      // Transform rows to use ISO 8601 instead of ms
+      // Transform rows to text-based settlement time
       const transformed = rowArr.map((row) => ({
-        settlement: row.settlement_ts == null
-          ? null
-          : new Date(row.settlement_ts).toISOString(),
+        settlement:
+          row.settlement_ts == null ? null : new Date(row.settlement_ts).toISOString(),
         regionid: row.regionid,
         region: row.region,
-        rrp: row.rrp,
-        totaldemand: row.totaldemand,
-        periodtype: row.periodtype,
-        netinterchange: row.netinterchange,
-        scheduledgeneration: row.scheduledgeneration,
-        semischeduledgeneration: row.semischeduledgeneration,
-        apcflag: row.apcflag,
+        market_name: row.market_name,
+        energy_price: row.energy_price,
+        price_status: row.price_status,
+        apc_flag: row.apc_flag,
+        market_suspended_flag: row.market_suspended_flag,
+        total_demand: row.total_demand,
+        net_interchange: row.net_interchange,
+        scheduled_generation: row.scheduled_generation,
+        semischeduled_generation: row.semischeduled_generation,
+        interconnector_flows: row.interconnector_flows,
+        raise_reg_price: row.raise_reg_price,
+        lower_reg_price: row.lower_reg_price,
+        raise_1sec_price: row.raise_1sec_price,
+        raise_6sec_price: row.raise_6sec_price,
+        raise_60sec_price: row.raise_60sec_price,
+        raise_5min_price: row.raise_5min_price,
+        lower_1sec_price: row.lower_1sec_price,
+        lower_6sec_price: row.lower_6sec_price,
+        lower_60sec_price: row.lower_60sec_price,
+        lower_5min_price: row.lower_5min_price,
       }));
 
       const resp = new Response(JSON.stringify(transformed), {
@@ -646,10 +816,9 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * queryLatestRecords: fetches the most recent record for every unique regionid
-   * (or, if regionParam is provided, the most recent for that region only),
-   * returning them in descending order by settlement_ts.
-   * Also sets pagination headers for consistency with /data endpoint usage.
+   * queryLatestRecords: fetches the most recent record for every unique regionid in the NEM
+   * (or, if regionParam is provided, the most recent for that region only), returning them
+   * in descending order by settlement_ts. Also sets pagination headers for consistency.
    */
   private queryLatestRecords(
     regionParam: string | null,
@@ -657,23 +826,25 @@ export class AemoData implements DurableObject {
     offset: number
   ): Response {
     try {
-      // Build a count query
+      // Count how many distinct "latest" entries we have
       let countSql = `
         SELECT COUNT(*) as total_count FROM (
           SELECT t.settlement_ts, t.regionid
-          FROM aemo_five_min_data t
+          FROM market_interval_data t
           JOIN (
             SELECT regionid, MAX(settlement_ts) AS max_ts
-            FROM aemo_five_min_data
+            FROM market_interval_data
+            WHERE market_name = 'NEM'
             GROUP BY regionid
           ) sub ON t.regionid = sub.regionid AND t.settlement_ts = sub.max_ts
+          WHERE t.market_name = 'NEM'
       `;
-      const countVals: (string)[] = [];
+      const countVals: string[] = [];
       if (regionParam) {
-        countSql += " WHERE t.regionid = ?";
+        countSql += " AND t.regionid = ?";
         countVals.push(regionParam);
       }
-      countSql += ") sub2";
+      countSql += ") alias";
 
       const countCursor = this.sql.exec<{ total_count: number }>(countSql, ...countVals);
       const countArr = countCursor.toArray();
@@ -682,20 +853,43 @@ export class AemoData implements DurableObject {
         totalCount = countArr[0].total_count;
       }
 
+      // Get the actual rows
       let query = `
-        SELECT t.settlement_ts, t.regionid, t.region, t.rrp, t.totaldemand,
-               t.periodtype, t.netinterchange, t.scheduledgeneration,
-               t.semischeduledgeneration, t.apcflag
-        FROM aemo_five_min_data t
+        SELECT t.settlement_ts,
+               t.regionid,
+               t.region,
+               t.market_name,
+               t.energy_price,
+               t.price_status,
+               t.apc_flag,
+               t.market_suspended_flag,
+               t.total_demand,
+               t.net_interchange,
+               t.scheduled_generation,
+               t.semischeduled_generation,
+               t.interconnector_flows,
+               t.raise_reg_price,
+               t.lower_reg_price,
+               t.raise_1sec_price,
+               t.raise_6sec_price,
+               t.raise_60sec_price,
+               t.raise_5min_price,
+               t.lower_1sec_price,
+               t.lower_6sec_price,
+               t.lower_60sec_price,
+               t.lower_5min_price
+        FROM market_interval_data t
         JOIN (
           SELECT regionid, MAX(settlement_ts) AS max_ts
-          FROM aemo_five_min_data
+          FROM market_interval_data
+          WHERE market_name = 'NEM'
           GROUP BY regionid
         ) sub ON t.regionid = sub.regionid AND t.settlement_ts = sub.max_ts
+        WHERE t.market_name = 'NEM'
       `;
-      const values: (string)[] = [];
+      const values: string[] = [];
       if (regionParam) {
-        query += " WHERE t.regionid = ?";
+        query += " AND t.regionid = ?";
         values.push(regionParam);
       }
       query += ` ORDER BY t.settlement_ts DESC LIMIT ? OFFSET ?`;
@@ -704,32 +898,37 @@ export class AemoData implements DurableObject {
       this.log("DEBUG", `queryLatestRecords: Final SQL="${query.trim()}"`);
       this.log("DEBUG", `queryLatestRecords: Values=${JSON.stringify(values)}`);
 
-      const resultCursor = this.sql.exec<IntervalRecord>(query, ...values);
+      const resultCursor = this.sql.exec<MarketIntervalRecord>(query, ...values);
       const rowArr = resultCursor.toArray();
       const rowCount = rowArr.length;
       this.log("DEBUG", `queryLatestRecords: retrieved ${rowCount} row(s).`);
 
-      if (rowCount === 0) {
-        this.log("DEBUG", "queryLatestRecords: 0 rows");
-      } else {
-        const sample = rowArr[0];
-        this.log("DEBUG", `queryLatestRecords: sampleRow => ${JSON.stringify(sample)}`);
-      }
-
-      // Transform to ISO8601
+      // Transform
       const transformed = rowArr.map((row) => ({
-        settlement: row.settlement_ts == null
-          ? null
-          : new Date(row.settlement_ts).toISOString(),
+        settlement:
+          row.settlement_ts == null ? null : new Date(row.settlement_ts).toISOString(),
         regionid: row.regionid,
         region: row.region,
-        rrp: row.rrp,
-        totaldemand: row.totaldemand,
-        periodtype: row.periodtype,
-        netinterchange: row.netinterchange,
-        scheduledgeneration: row.scheduledgeneration,
-        semischeduledgeneration: row.semischeduledgeneration,
-        apcflag: row.apcflag,
+        market_name: row.market_name,
+        energy_price: row.energy_price,
+        price_status: row.price_status,
+        apc_flag: row.apc_flag,
+        market_suspended_flag: row.market_suspended_flag,
+        total_demand: row.total_demand,
+        net_interchange: row.net_interchange,
+        scheduled_generation: row.scheduled_generation,
+        semischeduled_generation: row.semischeduled_generation,
+        interconnector_flows: row.interconnector_flows,
+        raise_reg_price: row.raise_reg_price,
+        lower_reg_price: row.lower_reg_price,
+        raise_1sec_price: row.raise_1sec_price,
+        raise_6sec_price: row.raise_6sec_price,
+        raise_60sec_price: row.raise_60sec_price,
+        raise_5min_price: row.raise_5min_price,
+        lower_1sec_price: row.lower_1sec_price,
+        lower_6sec_price: row.lower_6sec_price,
+        lower_60sec_price: row.lower_60sec_price,
+        lower_5min_price: row.lower_5min_price,
       }));
 
       const resp = new Response(JSON.stringify(transformed), {
@@ -758,47 +957,6 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * recordToInterval: convert an AEMO '5MIN' record into an AemoInterval object.
-   * If parse fails => logs and returns null.
-   */
-  private recordToInterval(item: AemoApiResponse["5MIN"][number]): AemoInterval | null {
-    const tsMs = this.parseLocalBrisbaneMs(item.SETTLEMENTDATE);
-    if (Number.isNaN(tsMs)) {
-      this.log("ERROR", `recordToInterval: invalid date parse => "${item.SETTLEMENTDATE}" => NaN`);
-      return null;
-    }
-
-    return {
-      settlementdate: item.SETTLEMENTDATE,
-      settlement_ts: tsMs,
-      regionid: item.REGIONID,
-      rrp: parseFloat(String(item.RRP)),
-      totaldemand: item.TOTALDEMAND !== undefined
-        ? parseFloat(String(item.TOTALDEMAND))
-        : null,
-      periodtype: item.PERIODTYPE !== undefined
-        ? String(item.PERIODTYPE)
-        : null,
-      netinterchange: item.NETINTERCHANGE !== undefined
-        ? parseFloat(String(item.NETINTERCHANGE))
-        : null,
-      scheduledgeneration: item.SCHEDULEDGENERATION !== undefined
-        ? parseFloat(String(item.SCHEDULEDGENERATION))
-        : null,
-      semischeduledgeneration: (() => {
-        // Attempt to handle naming variations
-        if (item.SEMISCHEDULEDGENERATION !== undefined) {
-          return parseFloat(String(item.SEMISCHEDULEDGENERATION));
-        }
-        return null;
-      })(),
-      apcflag: item.APCFLAG !== undefined
-        ? parseFloat(String(item.APCFLAG))
-        : null,
-    };
-  }
-
-  /**
    * parseHeaders => parse from environment to record<string, string>, ignoring errors.
    */
   private parseHeaders(raw: string): Record<string, string> {
@@ -815,8 +973,9 @@ export class AemoData implements DurableObject {
    */
   private parseLocalBrisbaneMs(dateStr: string): number {
     const hasOffsetRegex = /[Zz]|[\+\-]\d{2}:?\d{2}(\s*\(.*\))?$/;
-    let adjusted = dateStr.trim();
+    let adjusted = (dateStr || "").trim();
     if (!hasOffsetRegex.test(adjusted)) {
+      // Assume Brisbane time +10:00
       adjusted += "+10:00";
     }
 
