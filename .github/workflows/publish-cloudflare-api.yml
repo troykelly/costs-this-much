@@ -244,7 +244,7 @@ jobs:
       ##########################################################################
       - name: Final Deploy to Production
         run: |
-          yarn dlx wrangler --config=workers/aemo-data-logger/wrangler.api.toml \
+          yarn dlx wrangler deploy --config=workers/aemo-data-logger/wrangler.api.toml \
           --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api \
           --upload-source-maps \
           --var LOG_LEVEL=${{ vars.API_LOG_LEVEL }} \
