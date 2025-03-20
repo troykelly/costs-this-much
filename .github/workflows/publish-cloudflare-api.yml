@@ -26,8 +26,6 @@ jobs:
         uses: actions/github-script@v6
         with:
           script: |
-            # const fetch = require("node-fetch"); // Provided by GitHub Actions environment
-
             const token = process.env.CLOUDFLARE_API_TOKEN;
             const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
             const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
@@ -35,67 +33,67 @@ jobs:
             const domainToAttach = `api.${process.env.CLOUDFLARE_DOMAIN_NAME}`;
 
             if (!token || !accountId) {
-              throw new Error("Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID in environment.");
+                throw new Error("Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID in environment.");
             }
             if (!process.env.CLOUDFLARE_SERVICE_NAME || !process.env.CLOUDFLARE_DOMAIN_NAME) {
-              throw new Error("Missing CLOUDFLARE_SERVICE_NAME or CLOUDFLARE_DOMAIN_NAME in environment variables.");
+                throw new Error("Missing CLOUDFLARE_SERVICE_NAME or CLOUDFLARE_DOMAIN_NAME in environment variables.");
             }
 
             async function cfApiRequest(path, method = 'GET', body = null) {
-              const url = `${baseUrl}${path}`;
-              const headers = {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-              };
-              const opts = { method, headers };
-              if (body) {
-                opts.body = JSON.stringify(body);
-              }
-              const resp = await fetch(url, opts);
-              if (!resp.ok && resp.status !== 404) {
-                const text = await resp.text();
-                throw new Error(`Cloudflare API error [${resp.status}]: ${text}`);
-              }
-              return { status: resp.status, data: await resp.json() };
+                const url = `${baseUrl}${path}`;
+                const headers = {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                };
+                const opts = { method, headers };
+                if (body) {
+                    opts.body = JSON.stringify(body);
+                }
+                const resp = await fetch(url, opts);
+                if (!resp.ok && resp.status !== 404) {
+                    const text = await resp.text();
+                    throw new Error(`Cloudflare API error [${resp.status}]: ${text}`);
+                }
+                return { status: resp.status, data: await resp.json() };
             }
 
             // Ensure the Worker Service is created
             async function ensureServiceExists() {
-              const path = `/workers/services/${encodeURIComponent(workerName)}`;
-              const result = await cfApiRequest(path, 'GET');
-              if (result.status === 404) {
-                console.log(`Worker service '${workerName}' not found. Creating it...`);
-                const createPath = `/workers/services`;
-                const createResp = await cfApiRequest(createPath, 'POST', { name: workerName });
-                if (createResp.status >= 400) {
-                  throw new Error(`Failed to create Worker service '${workerName}'`);
+                const path = `/workers/services/${encodeURIComponent(workerName)}`;
+                const result = await cfApiRequest(path, 'GET');
+                if (result.status === 404) {
+                    console.log(`Worker service '${workerName}' not found. Creating it...`);
+                    const createPath = `/workers/services`;
+                    const createResp = await cfApiRequest(createPath, 'POST', { name: workerName });
+                    if (createResp.status >= 400) {
+                        throw new Error(`Failed to create Worker service '${workerName}'`);
+                    }
+                    console.log(`Created Worker service '${workerName}'.`);
+                } else {
+                    console.log(`Worker service '${workerName}' already exists.`);
                 }
-                console.log(`Created Worker service '${workerName}'.`);
-              } else {
-                console.log(`Worker service '${workerName}' already exists.`);
-              }
             }
 
             // Ensure that a custom domain is attached for "api.CLOUDFLARE_DOMAIN_NAME"
             async function ensureDomainAttached() {
-              const path = `/workers/services/${encodeURIComponent(workerName)}/domains`;
-              const { status, data } = await cfApiRequest(path, 'GET');
-              if (status === 404) {
-                // If the service didn't exist, we've just created it above, so re-check
-                return ensureDomainAttached();
-              }
-              const attached = data.result || [];
-              const domainFound = attached.some(d => d.name === domainToAttach);
-              if (!domainFound) {
-                console.log(`Domain '${domainToAttach}' not attached. Attaching now...`);
-                const attachResp = await cfApiRequest(path, 'POST', { name: domainToAttach });
-                if (attachResp.status >= 400) {
-                  throw new Error(`Failed to attach domain '${domainToAttach}' to worker '${workerName}'`);
+                const path = `/workers/services/${encodeURIComponent(workerName)}/domains`;
+                const { status, data } = await cfApiRequest(path, 'GET');
+                if (status === 404) {
+                    // If the service didn't exist, we've just created it above, so re-check
+                    return ensureDomainAttached();
                 }
-                console.log(`Domain '${domainToAttach}' successfully attached.`);
-              } else {
-                console.log(`Domain '${domainToAttach}' is already attached.`);
-              }
+                const attached = data.result || [];
+                const domainFound = attached.some(d => d.name === domainToAttach);
+                if (!domainFound) {
+                    console.log(`Domain '${domainToAttach}' not attached. Attaching now...`);
+                    const attachResp = await cfApiRequest(path, 'POST', { name: domainToAttach });
+                    if (attachResp.status >= 400) {
+                        throw new Error(`Failed to attach domain '${domainToAttach}' to worker '${workerName}'`);
+                    }
+                    console.log(`Domain '${domainToAttach}' successfully attached.`);
+                } else {
+                    console.log(`Domain '${domainToAttach}' is already attached.`);
+                }
             }
 
             await ensureServiceExists();
@@ -108,8 +106,7 @@ jobs:
 
       ##########################################################################
       # 3) Deploy using Wrangler, ensuring secrets and environment variables
-      #    are set. We'll treat SIGNING_KEYS & CLIENT_IDS as "secrets" and
-      #    the rest as normal "vars".
+      #    are set. We'll treat SIGNING_KEYS & CLIENT_IDS as "secrets."
       ##########################################################################
       - name: Deploy Cloudflare API Worker
         uses: cloudflare/wrangler-action@v3
@@ -130,7 +127,6 @@ jobs:
             wrangler var set AEMO_API_HEADERS "$AEMO_API_HEADERS"
             wrangler var set RATE_LIMIT_MAX "$API_RATE_LIMIT_MAX"
             wrangler var set RATE_LIMIT_WINDOW_SEC "$API_RATE_LIMIT_WINDOW_SEC"
-          # Finally, we'll publish the Worker.
           command: publish
         env:
           SIGNING_KEYS: ${{ secrets.API_SIGNING_KEYS }}
