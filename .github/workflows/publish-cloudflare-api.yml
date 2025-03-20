@@ -247,11 +247,11 @@ jobs:
           yarn dlx wrangler deploy --config=workers/aemo-data-logger/wrangler.api.toml \
           --name=${{ vars.CLOUDFLARE_SERVICE_NAME }}-api \
           --upload-source-maps \
-          --var LOG_LEVEL ${{ vars.API_LOG_LEVEL }} \
-          --var AEMO_API_URL ${{ vars.AEMO_API_URL }} \
-          --var AEMO_API_HEADERS ${{ vars.AEMO_API_HEADERS }} \
-          --var RATE_LIMIT_MAX ${{ vars.API_RATE_LIMIT_MAX }} \
-          --var RATE_LIMIT_WINDOW_SEC ${{ vars.API_RATE_LIMIT_WINDOW_SEC }}
+          --var LOG_LEVEL:${{ vars.API_LOG_LEVEL }} \
+          AEMO_API_URL:${{ vars.AEMO_API_URL }} \
+          AEMO_API_HEADERS:${{ vars.AEMO_API_HEADERS }} \
+          RATE_LIMIT_MAX:${{ vars.API_RATE_LIMIT_MAX }} \
+          RATE_LIMIT_WINDOW_SEC:${{ vars.API_RATE_LIMIT_WINDOW_SEC }}
         env:
           CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
           CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
