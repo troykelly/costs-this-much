@@ -20,20 +20,22 @@ jobs:
       ##########################################################################
       # 2) Ensure the Cloudflare Worker Service ("CLOUDFLARE_SERVICE_NAME-api")
       #    and a custom domain ("api.CLOUDFLARE_DOMAIN_NAME") exist.
+      #    (Using X-Auth-Email and X-Auth-Key because POST with a token is disallowed.)
       ##########################################################################
       - name: Verify or create CF Worker Service & domain
         id: ensure-service
         uses: actions/github-script@v6
         with:
           script: |
-            const token = process.env.CLOUDFLARE_API_TOKEN;
+            const email = process.env.CLOUDFLARE_EMAIL;
+            const apiKey = process.env.CLOUDFLARE_API_KEY;
             const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
             const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
             const workerName = `${process.env.CLOUDFLARE_SERVICE_NAME}-api`;
             const domainToAttach = `api.${process.env.CLOUDFLARE_DOMAIN_NAME}`;
 
-            if (!token || !accountId) {
-                throw new Error("Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID in environment.");
+            if (!email || !apiKey || !accountId) {
+                throw new Error("Missing CLOUDFLARE_EMAIL, CLOUDFLARE_API_KEY, or CLOUDFLARE_ACCOUNT_ID in environment.");
             }
             if (!process.env.CLOUDFLARE_SERVICE_NAME || !process.env.CLOUDFLARE_DOMAIN_NAME) {
                 throw new Error("Missing CLOUDFLARE_SERVICE_NAME or CLOUDFLARE_DOMAIN_NAME in environment variables.");
@@ -42,7 +44,8 @@ jobs:
             async function cfApiRequest(path, method = 'GET', body = null) {
                 const url = `${baseUrl}${path}`;
                 const headers = {
-                    'Authorization': `Bearer ${token}`,
+                    'X-Auth-Email': email,
+                    'X-Auth-Key': apiKey,
                     'Content-Type': 'application/json'
                 };
                 const opts = { method, headers };
@@ -79,7 +82,7 @@ jobs:
                 const path = `/workers/services/${encodeURIComponent(workerName)}/domains`;
                 const { status, data } = await cfApiRequest(path, 'GET');
                 if (status === 404) {
-                    // If the service didn't exist, we've just created it above, so re-check
+                    // If the service wasn't found and just got created, try again
                     return ensureDomainAttached();
                 }
                 const attached = data.result || [];
@@ -99,14 +102,16 @@ jobs:
             await ensureServiceExists();
             await ensureDomainAttached();
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_DOMAIN_NAME: ${{ vars.CLOUDFLARE_DOMAIN_NAME }}
           CLOUDFLARE_SERVICE_NAME: ${{ vars.CLOUDFLARE_SERVICE_NAME }}
 
       ##########################################################################
       # 3) Deploy using Wrangler, ensuring secrets and environment variables
-      #    are set. We'll treat SIGNING_KEYS & CLIENT_IDS as "secrets."
+      #    are set. We'll treat SIGNING_KEYS & CLIENT_IDS as "secrets" and
+      #    the rest as standard "vars."
       ##########################################################################
       - name: Deploy Cloudflare API Worker
         uses: cloudflare/wrangler-action@v3
@@ -118,7 +123,7 @@ jobs:
           secrets: |
             SIGNING_KEYS
             CLIENT_IDS
-          # We'll set environment variables with wrangler var set.
+          # Set environment variables via wrangler var set.
           # The "preCommands" block runs before "wrangler publish".
           preCommands: |
             echo "Setting environment variables..."
