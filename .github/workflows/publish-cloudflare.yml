@@ -135,8 +135,19 @@ jobs:
       - name: Install project dependencies
         run: yarn install --immutable
 
+      - name: Generate environment variables
+        id: derive-env
+        run: |
+          # We'll parse the first item from the array in API_CLIENT_IDS
+          # and set up the base URL for the API
+          echo "API_CLIENT_ID=$(echo '${{ vars.API_CLIENT_IDS }}' | jq -r '.[0]')" >> $GITHUB_ENV
+          echo "CLOUDFLARE_API_URL=https://api.${{ vars.CLOUDFLARE_DOMAIN_NAME }}" >> $GITHUB_ENV
+
       - name: Build frontend
         run: yarn workspace frontend build
+        env:
+          VITE_APP_CLIENT_ID: ${{ env.API_CLIENT_ID }}
+          VITE_API_URL: ${{ env.CLOUDFLARE_API_URL }}
 
       ############################################################################
       # 4) Deploy to Cloudflare Pages using Wrangler
