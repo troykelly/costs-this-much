@@ -229,13 +229,7 @@ function transformIntervalRecordToAemoInterval(rec: IntervalRecord): AemoInterva
   return {
     SETTLEMENTDATE: rec.settlement ?? '',
     REGIONID: rec.regionid ?? '',
-    RRP: rec.rrp ?? 0,
-    TOTALDEMAND: rec.totaldemand ?? 0,
-    PERIODTYPE: rec.periodtype ?? 'ENERGY',
-    NETINTERCHANGE: rec.netinterchange ?? 0,
-    SCHEDULEDGENERATION: rec.scheduledgeneration ?? 0,
-    SEMISCHEDULEDGENERATION: rec.semischeduledgeneration ?? 0,
-    APCFLAG: rec.apcflag ?? 0
+    RRP: rec.rrp ?? 0
   };
 }
 
@@ -344,18 +338,18 @@ const App: React.FC = () => {
   }
 
   /**
-   * After we fetch local data from the last 48 hours (or so), we transform and
+   * After we fetch local data from the last 7 days (or so), we transform and
    * run the same logic that filters by region, sets the scenario cost, etc.
    */
   async function loadAndProcessLocalData(): Promise<void> {
     try {
-      // Let's say we load the last 48 hours from local IDB for now - enough for display.
+      // Pull full 7 days from local IDB for display
       const now = Date.now();
-      const fortyEightAgo = now - 48 * 60 * 60 * 1000;
+      const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
       const ctm = ctmClientRef.current;
       if (!ctm) return;
 
-      const records = await ctm.getLocalDataInRange(fortyEightAgo, now);
+      const records = await ctm.getLocalDataInRange(sevenDaysAgo, now);
       const intervals: AemoInterval[] = records.map(transformIntervalRecordToAemoInterval);
 
       setAllIntervals(intervals);
@@ -458,22 +452,21 @@ const App: React.FC = () => {
     let intervalId: number | null = null;
     (async () => {
       try {
-        // Create the client using environment variables
         ctmClientRef.current = new CostsThisMuch({
           apiBaseUrl: import.meta.env.VITE_API_URL
         });
         setLoading(true);
 
-        // init & login using environment variable client ID
         await ctmClientRef.current.initialize();
         await ctmClientRef.current.login(import.meta.env.VITE_APP_CLIENT_ID);
 
-        // fetch last 7 days
+        // Fetch and store the last 7 days
         await ctmClientRef.current.fetchAndStoreLastWeek();
-        // load
+
+        // Load data from local storage
         await loadAndProcessLocalData();
 
-        // every 5 min, fetch new intervals (2h) & reload
+        // Every 5 min, fetch new intervals (2h) & reload
         intervalId = window.setInterval(async () => {
           try {
             await ctmClientRef.current?.fetchAndStoreLatest(7200);
