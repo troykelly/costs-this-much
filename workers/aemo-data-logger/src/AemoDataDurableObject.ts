@@ -100,11 +100,7 @@ export interface AemoApiResponse {
     PERIODTYPE?: string;
     NETINTERCHANGE?: string | number;
     SCHEDULEDGENERATION?: string | number;
-    SEMISCHEduledGENERATION?: string | number;   // Potential duplicates/typos
-    SEMISCHEduledGENERATION?: string | number;
-    SEMISCHEduledGENERATION?: string | number;
-    SEMISCHEduledGENERATION?: string | number;
-    SEMISCHECHEDULEDGENERATION?: string | number;
+    SEMISCHEDULEDGENERATION?: string | number;
     APCFLAG?: string | number;
   }[];
 }
@@ -200,28 +196,31 @@ export class AemoData implements DurableObject {
 
       // Count total rows
       const countQuery = `SELECT COUNT(*) AS total_count FROM aemo_five_min_data;`;
-      const countResult = this.sql.exec<{ total_count: number }>(countQuery);
+      const countCursor = this.sql.exec<{ total_count: number }>(countQuery);
+      const countRows = countCursor.toArray();
       let rowCount = 0;
-      if (Array.isArray(countResult) && countResult.length > 0 && countResult[0].total_count !== null) {
-        rowCount = countResult[0].total_count;
+      if (countRows.length > 0 && countRows[0].total_count !== null) {
+        rowCount = countRows[0].total_count;
       }
       this.log("DEBUG", `debugTableStatus: totalCount=${rowCount}`);
 
       // Log first record
       if (rowCount > 0) {
-        const firstRowArray = this.sql.exec<IntervalRecord>(
+        const firstRowCursor = this.sql.exec<IntervalRecord>(
           `SELECT * FROM aemo_five_min_data ORDER BY settlement_ts ASC LIMIT 1;`
         );
-        if (firstRowArray.length > 0) {
-          this.log("DEBUG", "debugTableStatus: First row in table => " + JSON.stringify(firstRowArray[0]));
+        const firstRows = firstRowCursor.toArray();
+        if (firstRows.length > 0) {
+          this.log("DEBUG", "debugTableStatus: First row in table => " + JSON.stringify(firstRows[0]));
         }
 
         // Log last record
-        const lastRowArray = this.sql.exec<IntervalRecord>(
+        const lastRowCursor = this.sql.exec<IntervalRecord>(
           `SELECT * FROM aemo_five_min_data ORDER BY settlement_ts DESC LIMIT 1;`
         );
-        if (lastRowArray.length > 0) {
-          this.log("DEBUG", "debugTableStatus: Last row in table => " + JSON.stringify(lastRowArray[0]));
+        const lastRows = lastRowCursor.toArray();
+        if (lastRows.length > 0) {
+          this.log("DEBUG", "debugTableStatus: Last row in table => " + JSON.stringify(lastRows[0]));
         }
       }
     } catch (err) {
@@ -353,12 +352,13 @@ export class AemoData implements DurableObject {
       WHERE settlement_ts >= ? AND settlement_ts <= ?
         AND regionid IN (${placeholders})
     `;
-    const existingRows = this.sql.exec<IntervalRecord>(
+    const existingCursor = this.sql.exec<IntervalRecord>(
       selectSql,
       earliest,
       latest,
       ...regionIds
     );
+    const existingRows = existingCursor.toArray();
     const existingKeys = new Set<string>();
     for (const row of existingRows) {
       existingKeys.add(`${row.settlement_ts}-${row.regionid}`);
@@ -423,7 +423,7 @@ export class AemoData implements DurableObject {
    *   - start/end => ascending
    *   - regionid => optional
    *   - limit/offset => paging
-   * if no parameters, fetch the latest intervals in descending order.
+   * if no parameters, fetch the latest intervals (one per region) in descending order.
    */
   private async handleRangeRequest(url: URL): Promise<Response> {
     this.log("DEBUG", "handleRangeRequest: invoked.");
@@ -522,7 +522,7 @@ export class AemoData implements DurableObject {
         return this.queryRange(startMs, endMs, regionParam, true, limit, offset);
       }
 
-      // No param => fetch latest (descending).
+      // No param => fetch the most recent record for each region in descending order.
       this.log("DEBUG", "handleRangeRequest: no parameters => calling queryLatestRecords (desc).");
       return this.queryLatestRecords(regionParam, limit, offset);
 
@@ -576,7 +576,7 @@ export class AemoData implements DurableObject {
       );
 
       // Immediately select rows (you can adjust as needed)
-      const result = this.sql.exec<IntervalRecord>(
+      const resultCursor = this.sql.exec<IntervalRecord>(
         `
         SELECT settlement_ts, regionid, region, rrp
         FROM aemo_five_min_data
@@ -584,6 +584,7 @@ export class AemoData implements DurableObject {
         LIMIT 5
       `
       );
+      const result = resultCursor.toArray();
 
       return new Response(JSON.stringify({
         message: "Inserted one row, now reading top 5 rows by settlement_ts:",
@@ -636,19 +637,19 @@ export class AemoData implements DurableObject {
       this.log("DEBUG", `queryRange: Final SQL="${query.trim()}"`);
       this.log("DEBUG", `queryRange: Values=${JSON.stringify(values)}`);
 
-      const result = this.sql.exec<IntervalRecord>(query, ...values);
-      const rowCount = Array.isArray(result) ? result.length : 0;
+      const resultCursor = this.sql.exec<IntervalRecord>(query, ...values);
+      const rowArr = resultCursor.toArray();
+      const rowCount = rowArr.length;
       this.log("DEBUG", `queryRange: Retrieved ${rowCount} row(s).`);
 
       if (rowCount === 0) {
-        this.log("DEBUG", "queryRange: No rows => running debugMinMax.");
-        this.debugMinMax();
+        this.log("DEBUG", "queryRange: No rows");
       } else {
-        const sample = result[0];
+        const sample = rowArr[0];
         this.log("DEBUG", `queryRange: sampleRow => ${JSON.stringify(sample)}`);
       }
 
-      return new Response(JSON.stringify(result), {
+      return new Response(JSON.stringify(rowArr), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -662,8 +663,9 @@ export class AemoData implements DurableObject {
   }
 
   /**
-   * queryLatestRecords: fetches the most recent record for every unique regionid,
-   * or if regionParam is provided, the most recent record for that specific regionid.
+   * queryLatestRecords: fetches the most recent record for every unique regionid
+   * (or, if regionParam is provided, the most recent for that region only),
+   * returning them in descending order by settlement_ts.
    * If 0 rows => logs min & max for debug.
    */
   private queryLatestRecords(
@@ -695,19 +697,19 @@ export class AemoData implements DurableObject {
       this.log("DEBUG", `queryLatestRecords: Final SQL="${query.trim()}"`);
       this.log("DEBUG", `queryLatestRecords: Values=${JSON.stringify(values)}`);
 
-      const result = this.sql.exec<IntervalRecord>(query, ...values);
-      const rowCount = Array.isArray(result) ? result.length : 0;
+      const resultCursor = this.sql.exec<IntervalRecord>(query, ...values);
+      const rowArr = resultCursor.toArray();
+      const rowCount = rowArr.length;
       this.log("DEBUG", `queryLatestRecords: retrieved ${rowCount} row(s).`);
 
       if (rowCount === 0) {
-        this.log("DEBUG", "queryLatestRecords: 0 rows => debugMinMax run.");
-        this.debugMinMax();
+        this.log("DEBUG", "queryLatestRecords: 0 rows");
       } else {
-        const sample = result[0];
+        const sample = rowArr[0];
         this.log("DEBUG", `queryLatestRecords: sampleRow => ${JSON.stringify(sample)}`);
       }
 
-      return new Response(JSON.stringify(result), {
+      return new Response(JSON.stringify(rowArr), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -750,17 +752,8 @@ export class AemoData implements DurableObject {
         : null,
       semischeduledgeneration: (() => {
         // Attempt to handle naming variations
-        if (item.SEMISCHEduledGENERATION !== undefined) {
-          return parseFloat(String(item.SEMISCHEduledGENERATION));
-        }
-        if (item.SEMISCHEduledGENERATION !== undefined) {
-          return parseFloat(String(item.SEMISCHEduledGENERATION));
-        }
-        if (item.SEMISCHEcheduledGENERATION !== undefined) {
-          return parseFloat(String(item.SEMISCHEcheduledGENERATION));
-        }
-        if (item.SEMISCHECHEDULEDGENERATION !== undefined) {
-          return parseFloat(String(item.SEMISCHECHEDULEDGENERATION));
+        if (item.SEMISCHEDULEDGENERATION !== undefined) {
+          return parseFloat(String(item.SEMISCHEDULEDGENERATION));
         }
         return null;
       })(),
@@ -798,70 +791,6 @@ export class AemoData implements DurableObject {
       return NaN;
     }
     return ms;
-  }
-
-  /**
-   * debugMinMax => logs min, max, and total count from the entire table.
-   * Also inserts a dummy row on each call.
-   */
-  private debugMinMax(): void {
-    try {
-      // Insert a dummy row each time this debug function is called.
-      const nowMs = Date.now();
-      this.sql.exec(
-        `
-        INSERT INTO aemo_five_min_data (
-          settlement_ts,
-          regionid,
-          region,
-          rrp,
-          totaldemand,
-          periodtype,
-          netinterchange,
-          scheduledgeneration,
-          semischeduledgeneration,
-          apcflag
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (settlement_ts, regionid)
-        DO NOTHING
-        `,
-        nowMs,
-        "DEBUG_ENTRY",
-        "DEBUG_REGION",
-        0,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null
-      );
-      this.log("DEBUG", `debugMinMax: Inserted dummy row at ts=${nowMs}`);
-
-      const boundaryRows = this.sql.exec<{
-        min_ts: number | null;
-        max_ts: number | null;
-        cnt: number | null;
-      }>(`
-        SELECT MIN(settlement_ts) AS min_ts,
-               MAX(settlement_ts) AS max_ts,
-               COUNT(*) AS cnt
-        FROM aemo_five_min_data
-      `);
-
-      if (boundaryRows.length > 0) {
-        const { min_ts, max_ts, cnt } = boundaryRows[0];
-        this.log(
-          "DEBUG",
-          `debugMinMax: Table boundaries => totalCount=${cnt}, min_ts=${min_ts}, max_ts=${max_ts}`
-        );
-      } else {
-        this.log("DEBUG", "debugMinMax: boundary query returned no rows; table likely empty.");
-      }
-    } catch (err) {
-      this.log("ERROR", `debugMinMax: error => ${String(err)}`);
-    }
   }
 
   /**
