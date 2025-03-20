@@ -78,7 +78,7 @@ jobs:
 
                 const execSync = require('child_process').execSync;
                 try {
-                    execSync(yarn dlx wrangler deploy --config=workers/aemo-data-logger/wrangler.api.toml --name=${workerName} --upload-source-maps`, { stdio: 'inherit' });
+                    execSync(`yarn dlx wrangler deploy --config=workers/aemo-data-logger/wrangler.api.toml --name=${workerName} --upload-source-maps`, { stdio: 'inherit' });
                     console.log(`Created Worker '${workerName}' via Wrangler deploy.`);
                 } catch (err) {
                     throw new Error(`Failed to create Worker service '${workerName}' via Wrangler.\nError: ${err.message}`);
