@@ -252,7 +252,7 @@ jobs:
           AEMO_API_HEADERS:'${{ vars.AEMO_API_HEADERS }}' \
           RATE_LIMIT_MAX:${{ vars.API_RATE_LIMIT_MAX }} \
           RATE_LIMIT_WINDOW_SEC:${{ vars.API_RATE_LIMIT_WINDOW_SEC }} \
-          --schedule '["1,6,11,16,21,26,31,36,41,46,51,56 * * * *"]'
+          --schedule '1,6,11,16,21,26,31,36,41,46,51,56 * * * *'
         env:
           CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
           CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
