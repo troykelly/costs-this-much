@@ -50,7 +50,6 @@ jobs:
                 throw new Error("Missing CLOUDFLARE_SERVICE_NAME in environment variables.");
             }
 
-            // Check if the Worker service exists via X-Auth-Key call.
             const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
             async function cfApiRequest(path, method = 'GET') {
                 const url = `${baseUrl}${path}`;
@@ -69,12 +68,6 @@ jobs:
             if (!result.ok && result.status === 404) {
                 console.log(`Worker service '${workerName}' not found. Creating with Wrangler...`);
 
-                // Use a shell command to run wrangler publish, which will create the Worker script
-                // if it doesn't already exist. We rely on the local wrangler.toml or commands here.
-                // If your worker name is auto-set in wrangler.toml, that will suffice. Otherwise, you
-                // might pass --name directly in the command below. Example:
-                //   wrangler publish --name=$WORKER_NAME
-                // For brevity, we'll rely on your existing wrangler.api.toml configuration.
                 const execSync = require('child_process').execSync;
                 try {
                     execSync(`wrangler deploy --config=workers/aemo-data-logger/wrangler.api.toml --name=${workerName} --upload-source-maps`, { stdio: 'inherit' });
@@ -135,14 +128,14 @@ jobs:
             }
 
             // Check domain
-            const path = `/workers/services/${encodeURIComponent(workerName)}/domains`;
-            const list = await cfApiRequest(path, 'GET');
+            const domainListPath = `/workers/domains?service=${encodeURIComponent(workerName)}&environment=api`;
+            const list = await cfApiRequest(domainListPath, 'GET');
             if (!list.ok && list.status !== 404) {
                 console.log(`Unable to list domains. Status=${list.status}, data:\n`, JSON.stringify(list.data, null, 2));
                 throw new Error(`Cannot verify domain attachments for '${workerName}'`);
             }
-            const domainArr = (list.data && list.data.result) ? list.data.result : [];
-            const alreadyAttached = domainArr.some(d => d.name === domainToAttach);
+            const domainArr = (list.data && Array.isArray(list.data.result)) ? list.data.result : [];
+            const alreadyAttached = domainArr.some(d => d.hostname === domainToAttach);
 
             if (!alreadyAttached) {
                 console.log(`Domain '${domainToAttach}' not attached to worker '${workerName}'. Attaching now with Wrangler...`);
@@ -166,7 +159,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       ##########################################################################
-      # 4) Ensure that the secrets (SIGNING_KEYS, CLIENT_IDS) are set.
+      # 4) Ensure the secrets (SIGNING_KEYS, CLIENT_IDS) are set.
       #    We'll use Wrangler to store them. This ensures:
       #      4. Ensure that the secrets SIGNING_KEYS, CLIENT_IDS are correctly set.
       ##########################################################################
@@ -195,7 +188,6 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # Just run some commands, but do *not* do a final publish yet.
           preCommands: |
             wrangler var set LOG_LEVEL "$API_LOG_LEVEL" --env=api
             wrangler var set AEMO_API_URL "$AEMO_API_URL" --env=api
