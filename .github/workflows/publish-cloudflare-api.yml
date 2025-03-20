@@ -18,11 +18,25 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up Node (if needed)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          check-latest: true
+
+      - name: Prepare Yarn environment
+        run: |
+          corepack enable
+          yarn set version stable
+          yarn config set nodeLinker node-modules
+          yarn config set enableGlobalCache true
+          yarn config set enableImmutableInstalls true
+
       ##########################################################################
       # (Prerequisite) Install Wrangler globally for usage in subsequent steps
       ##########################################################################
       - name: Install Wrangler
-        run: npm install -g wrangler@latest
+        run: yarn global add wrangler@latest
 
       ##########################################################################
       # 2) Verify if the Worker exists. If not, create it with Wrangler.
