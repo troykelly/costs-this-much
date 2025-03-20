@@ -458,16 +458,15 @@ const App: React.FC = () => {
     let intervalId: number | null = null;
     (async () => {
       try {
-        // Create the client
+        // Create the client using environment variables
         ctmClientRef.current = new CostsThisMuch({
-          apiBaseUrl: 'http://localhost:8787'
+          apiBaseUrl: import.meta.env.VITE_API_URL
         });
         setLoading(true);
 
-        // init & login
+        // init & login using environment variable client ID
         await ctmClientRef.current.initialize();
-        // Use a sample "public" client ID or any valid ID from your system
-        await ctmClientRef.current.login('public-sample-client-id-0001');
+        await ctmClientRef.current.login(import.meta.env.VITE_APP_CLIENT_ID);
 
         // fetch last 7 days
         await ctmClientRef.current.fetchAndStoreLastWeek();
