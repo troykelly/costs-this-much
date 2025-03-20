@@ -189,6 +189,27 @@ paths:
       responses:
         '200':
           description: An array of intervals matching the query or latest data if none provided.
+          headers:
+            X-Page:
+              schema:
+                type: integer
+              description: The current page number (1-based).
+            X-Limit:
+              schema:
+                type: integer
+              description: The number of records returned per page.
+            X-Total-Pages:
+              schema:
+                type: integer
+              description: The total number of pages available.
+            X-Has-Next-Page:
+              schema:
+                type: boolean
+              description: Whether there is another page beyond the current page.
+            X-Total-Count:
+              schema:
+                type: integer
+              description: The total count of matching records for the query.
           content:
             application/json:
               schema:

@@ -617,6 +617,8 @@ export class AemoData implements DurableObject {
   /**
    * queryRange: returns rows for settlement_ts in [startMs..endMs], optional region filter,
    * ordering asc/desc. If 0 rows => logs min & max boundary.
+   * Now also sets pagination headers: 
+   *  X-Page, X-Limit, X-Total-Pages, X-Has-Next-Page, X-Total-Count
    */
   private queryRange(
     startMs: number,
@@ -627,6 +629,26 @@ export class AemoData implements DurableObject {
     offset: number
   ): Response {
     try {
+      // We'll build a base query for counting total
+      let countQuery = `
+        SELECT COUNT(*) as total_count
+        FROM aemo_five_min_data
+        WHERE settlement_ts >= ? AND settlement_ts <= ?
+      `;
+      const countValues: (number | string)[] = [startMs, endMs];
+      if (regionParam) {
+        countQuery += " AND regionid = ?";
+        countValues.push(regionParam);
+      }
+
+      // Execute the count query
+      const countCursor = this.sql.exec<{ total_count: number }>(countQuery, ...countValues);
+      const countArr = countCursor.toArray();
+      let totalCount = 0;
+      if (countArr.length > 0 && typeof countArr[0].total_count === "number") {
+        totalCount = countArr[0].total_count;
+      }
+
       const orderBy = asc ? "ASC" : "DESC";
       let query = `
         SELECT settlement_ts, regionid, region, rrp, totaldemand, periodtype,
@@ -635,7 +657,6 @@ export class AemoData implements DurableObject {
         WHERE settlement_ts >= ? AND settlement_ts <= ?
       `;
       const values: (number | string)[] = [startMs, endMs];
-
       if (regionParam) {
         query += " AND regionid = ?";
         values.push(regionParam);
@@ -675,10 +696,22 @@ export class AemoData implements DurableObject {
         apcflag: row.apcflag,
       }));
 
-      return new Response(JSON.stringify(transformed), {
+      const resp = new Response(JSON.stringify(transformed), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
+
+      // Pagination headers
+      const pageNumber = Math.floor(offset / limit) + 1;
+      const totalPages = Math.ceil(totalCount / limit);
+
+      resp.headers.set("X-Page", pageNumber.toString());
+      resp.headers.set("X-Limit", limit.toString());
+      resp.headers.set("X-Total-Count", totalCount.toString());
+      resp.headers.set("X-Total-Pages", totalPages.toString());
+      resp.headers.set("X-Has-Next-Page", (pageNumber < totalPages).toString());
+
+      return resp;
     } catch (err) {
       this.log("ERROR", `queryRange error => ${String(err)}`);
       return new Response(JSON.stringify({ error: String(err) }), {
@@ -692,7 +725,7 @@ export class AemoData implements DurableObject {
    * queryLatestRecords: fetches the most recent record for every unique regionid
    * (or, if regionParam is provided, the most recent for that region only),
    * returning them in descending order by settlement_ts.
-   * If 0 rows => logs min & max for debug.
+   * Also sets pagination headers for consistency with /data endpoint usage.
    */
   private queryLatestRecords(
     regionParam: string | null,
@@ -700,6 +733,31 @@ export class AemoData implements DurableObject {
     offset: number
   ): Response {
     try {
+      // Build a count query
+      let countSql = `
+        SELECT COUNT(*) as total_count FROM (
+          SELECT t.settlement_ts, t.regionid
+          FROM aemo_five_min_data t
+          JOIN (
+            SELECT regionid, MAX(settlement_ts) AS max_ts
+            FROM aemo_five_min_data
+            GROUP BY regionid
+          ) sub ON t.regionid = sub.regionid AND t.settlement_ts = sub.max_ts
+      `;
+      const countVals: (string)[] = [];
+      if (regionParam) {
+        countSql += " WHERE t.regionid = ?";
+        countVals.push(regionParam);
+      }
+      countSql += ") sub2";
+
+      const countCursor = this.sql.exec<{ total_count: number }>(countSql, ...countVals);
+      const countArr = countCursor.toArray();
+      let totalCount = 0;
+      if (countArr.length > 0 && typeof countArr[0].total_count === "number") {
+        totalCount = countArr[0].total_count;
+      }
+
       let query = `
         SELECT t.settlement_ts, t.regionid, t.region, t.rrp, t.totaldemand,
                t.periodtype, t.netinterchange, t.scheduledgeneration,
@@ -711,14 +769,13 @@ export class AemoData implements DurableObject {
           GROUP BY regionid
         ) sub ON t.regionid = sub.regionid AND t.settlement_ts = sub.max_ts
       `;
-      const values: (number | string)[] = [];
-
+      const values: (string)[] = [];
       if (regionParam) {
         query += " WHERE t.regionid = ?";
         values.push(regionParam);
       }
       query += ` ORDER BY t.settlement_ts DESC LIMIT ? OFFSET ?`;
-      values.push(limit, offset);
+      values.push(limit.toString(), offset.toString());
 
       this.log("DEBUG", `queryLatestRecords: Final SQL="${query.trim()}"`);
       this.log("DEBUG", `queryLatestRecords: Values=${JSON.stringify(values)}`);
@@ -751,10 +808,22 @@ export class AemoData implements DurableObject {
         apcflag: row.apcflag,
       }));
 
-      return new Response(JSON.stringify(transformed), {
+      const resp = new Response(JSON.stringify(transformed), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
+
+      // Pagination headers
+      const pageNumber = Math.floor(offset / limit) + 1;
+      const totalPages = Math.ceil(totalCount / limit);
+
+      resp.headers.set("X-Page", pageNumber.toString());
+      resp.headers.set("X-Limit", limit.toString());
+      resp.headers.set("X-Total-Count", totalCount.toString());
+      resp.headers.set("X-Total-Pages", totalPages.toString());
+      resp.headers.set("X-Has-Next-Page", (pageNumber < totalPages).toString());
+
+      return resp;
     } catch (err) {
       this.log("ERROR", `queryLatestRecords error => ${String(err)}`);
       return new Response(JSON.stringify({ error: String(err) }), {

@@ -222,6 +222,7 @@ export default {
 
   /**
    * Retrieve data from the AemoData DO, must have a valid short-lived token (Bearer).
+   * Now preserves pagination-related headers from the DO response.
    */
   async handleDataRequest(request: Request, env: Env): Promise<Response> {
     try {
@@ -246,10 +247,12 @@ export default {
         return new Response(await doResp.text(), { status: doResp.status });
       }
 
-      return new Response(await doResp.text(), {
-        status: 200,
-        headers: { "content-type": "application/json" },
+      // Clone the DO's response so that we preserve all headers (including pagination info)
+      const newResp = new Response(doResp.body, {
+        status: doResp.status,
+        headers: new Headers(doResp.headers),
       });
+      return newResp;
     } catch (err) {
       return new Response("Error: " + (err as Error).message, { status: 500 });
     }
@@ -302,13 +305,13 @@ function findCurrentSigningKey(
   let best: KeyDefinition | undefined;
   for (const k of keys) {
     if (k.revoked) continue;
-    const startTime = (k.start ?? 0) * 1000;
-    const endTime = (k.expire ?? 0) * 1000;
+    const startTime = (Number(k.start) || 0) * 1000;
+    const endTime = (Number(k.expire) || 0) * 1000;
     if (startTime <= now && now < endTime) {
       if (!best) {
         best = k;
       } else {
-        const bestStart = (best.start ?? 0) * 1000;
+        const bestStart = (Number(best.start) || 0) * 1000;
         if (startTime > bestStart) {
           best = k;
         }
