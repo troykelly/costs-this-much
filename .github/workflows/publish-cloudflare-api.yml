@@ -90,8 +90,7 @@ jobs:
 
       ##########################################################################
       # 3) Ensure the custom domain ("api.CLOUDFLARE_DOMAIN_NAME") is pointed
-      #    at the Worker. If not, attach it. This satisfies:
-      #      3. Ensure that the domain is pointed at the worker.
+      #    at the Worker. If not, attach it using Cloudflare's API with PUT.
       ##########################################################################
       - name: Verify or Attach Domain
         id: verify-domain
@@ -112,6 +111,7 @@ jobs:
             }
 
             const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
+
             async function cfApiRequest(path, method = 'GET', body = null) {
                 const url = `${baseUrl}${path}`;
                 const headers = {
@@ -127,29 +127,57 @@ jobs:
                 return { ok: resp.ok, status: resp.status, data: await resp.json() };
             }
 
-            // Check domain
+            // 1) Fetch the zone_id by searching the zone for CLOUDFLARE_DOMAIN_NAME
+            const zoneResponse = await cfApiRequest(`/zones?name=${process.env.CLOUDFLARE_DOMAIN_NAME}`, 'GET');
+            if (!zoneResponse.ok) {
+                console.log(`Unable to lookup zone for domain '${process.env.CLOUDFLARE_DOMAIN_NAME}'. Status=${zoneResponse.status}, data:\n`, JSON.stringify(zoneResponse.data, null, 2));
+                throw new Error("Failed to retrieve zone_id.");
+            }
+            const zoneArr = Array.isArray(zoneResponse.data?.result) ? zoneResponse.data.result : [];
+            if (zoneArr.length === 0) {
+                throw new Error(`No matching zone was found for domain '${process.env.CLOUDFLARE_DOMAIN_NAME}'.`);
+            }
+            const zoneId = zoneArr[0].id;
+            console.log(`Using zone_id='${zoneId}' for domain '${process.env.CLOUDFLARE_DOMAIN_NAME}'.`);
+
+            // 2) Check whether domain is already attached to this worker in environment=api
             const domainListPath = `/workers/domains?service=${encodeURIComponent(workerName)}&environment=api`;
             const list = await cfApiRequest(domainListPath, 'GET');
             if (!list.ok && list.status !== 404) {
                 console.log(`Unable to list domains. Status=${list.status}, data:\n`, JSON.stringify(list.data, null, 2));
-                throw new Error(`Cannot verify domain attachments for '${workerName}'`);
+                throw new Error(`Cannot verify domain attachments for '${workerName}'.`);
             }
-            const domainArr = (list.data && Array.isArray(list.data.result)) ? list.data.result : [];
-            const alreadyAttached = domainArr.some(d => d.hostname === domainToAttach);
+            const domainArr = list.data?.result;
+            if (!Array.isArray(domainArr)) {
+                console.log("Missing or invalid 'result' array in domain listing response:\n", JSON.stringify(list.data, null, 2));
+                throw new Error("Cannot parse domain listing from Cloudflare response.");
+            }
 
+            const alreadyAttached = domainArr.some(d => d.hostname === domainToAttach);
             if (!alreadyAttached) {
-                console.log(`Domain '${domainToAttach}' not attached to worker '${workerName}'. Attaching now with Wrangler...`);
-                const execSync = require('child_process').execSync;
-                try {
-                    execSync(`wrangler custom-domains create ${domainToAttach} --env=api`, { stdio: 'inherit' });
-                    console.log(`Domain '${domainToAttach}' successfully attached to worker '${workerName}'.`);
-                } catch (err) {
-                    console.log('Failed to attach domain via Wrangler. Possibly it is already attached or another conflict.\n', err.message);
+                console.log(`Domain '${domainToAttach}' not attached to worker '${workerName}'. Attaching now via PUT...`);
+
+                const attachReqBody = {
+                    environment: "api",
+                    hostname: domainToAttach,
+                    service: workerName,
+                    zone_id: zoneId
+                };
+                const attachResp = await cfApiRequest(
+                    '/workers/domains',
+                    'PUT',
+                    attachReqBody
+                );
+
+                if (!attachResp.ok) {
+                    console.log('Failed to attach domain. Response:\n', JSON.stringify(attachResp.data, null, 2));
                     throw new Error(`Failed to attach domain '${domainToAttach}' to Worker '${workerName}'.`);
                 }
+                console.log(`Domain '${domainToAttach}' successfully attached to worker '${workerName}'.`);
             } else {
                 console.log(`Domain '${domainToAttach}' is already attached to worker '${workerName}'.`);
             }
+
             core.setOutput("done", "true");
         env:
           CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
