@@ -142,7 +142,7 @@ interface CombinedIntervalRow {
 
 /**
  * AemoData DO: fetches data from AEMO_DATA_SUMMARY endpoint (which internally includes
- * ELEC_NEM_SUMMARY + ELEC_NEM_SUMMARY_PRICES arrays in the JSON) and stores the merges.
+ * ELEC_NEM_SUMMARY + ELEC_NEM_SUMMARY_PRICES) and stores the merges.
  */
 export class AemoData implements DurableObject {
   private readonly sql: SqlStorage;
@@ -378,7 +378,7 @@ export class AemoData implements DurableObject {
           lower_60sec_price,
           lower_5min_price
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (settlement_ts, regionid, market_name)
         DO NOTHING
       `,
@@ -739,4 +739,12 @@ export class AemoData implements DurableObject {
       console.log(`[${level}] ${msg}`);
     }
   }
+}
+
+interface SimpleIntervalRow {
+  settlement_ts: number;
+  regionid: string;
+  region: string | null;
+  market_name: string;
+  energy_price: number | null;
 }
