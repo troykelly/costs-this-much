@@ -3,14 +3,15 @@ info:
   title: "AEMO Data Logger & API Worker"
   description: >
     This OpenAPI document describes the Cloudflare-based API Worker endpoints,
-    including JWT issuance, token refresh, data retrieval, and JWKS access for
-    verifying RSA-signed tokens.
+    including JWT issuance, token refresh, data retrieval, JWKS access, and
+    pricing constants for retail cost calculations.
 
-    Version 1.1.0 includes:
+    Version 1.2.0 includes:
     • Updated details on rate limiting (429 status).  
     • Enhanced pagination header information for /data responses.  
-    • Comprehensive request/response payload definitions to align with the latest code.
-  version: "1.1.0"
+    • Comprehensive request/response payload definitions to align with the latest code.  
+    • New /constants endpoint returning pricing constants per region.
+  version: "1.2.0"
 
 servers:
   - url: "https://api.coststhismuch.au"
@@ -321,6 +322,54 @@ paths:
         '500':
           description: An error retrieving data from the server.
 
+  /constants:
+    get:
+      operationId: getConstants
+      summary: Retrieves pricing constants for a given region.
+      description: |
+        Requires a valid short-lived Bearer token.  
+        Specify your target region via the "regionid" query parameter (e.g., NSW1, QLD1).  
+        Returns a list of constants used in retail price calculations.
+      parameters:
+        - name: regionid
+          in: query
+          description: The region ID to retrieve constants for (e.g. "NSW1").
+          required: true
+          schema:
+            type: string
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: An array of pricing constants for the specified region.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PricingConstantRecord"
+              example:
+                - name: "Network Charges"
+                  rate: 0.1
+                  percent: null
+                  type: "flat"
+                  calendar: []
+                  hour: []
+                - name: "Environmental Costs"
+                  rate: null
+                  percent: 10
+                  type: "kWh"
+                  calendar: []
+                  hour: []
+        '400':
+          description: Missing or invalid region.
+        '401':
+          description: Missing or invalid bearer token.
+        '429':
+          description: Too Many Requests - rate limit exceeded.
+        '500':
+          description: An error occurred retrieving constants.
+
 components:
   securitySchemes:
     bearerAuth:
@@ -501,3 +550,50 @@ components:
         - settlement
         - regionid
         - rrp
+
+    PricingConstantRecord:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Name of the cost item.
+        rate:
+          type:
+            - number
+            - "null"
+          description: Flat rate in AUD. If null, the cost is percentage-based.
+        percent:
+          type:
+            - number
+            - "null"
+          description: Percentage rate (e.g. 10 => 10%). If null, the cost is rate-based.
+        type:
+          type: string
+          description: "Indicates how the cost is applied, e.g. 'flat' or 'kWh'."
+        calendar:
+          type: array
+          description: Date range constraints for the cost. Optional (could be empty).
+          items:
+            type: object
+            properties:
+              startDay:
+                type: integer
+              startMonth:
+                type: integer
+              endDay:
+                type: integer
+              endMonth:
+                type: integer
+        hour:
+          type: array
+          description: Hourly range constraints for the cost. Optional (could be empty).
+          items:
+            type: object
+            properties:
+              startHour:
+                type: integer
+              endHour:
+                type: integer
+      required:
+        - name
+        - type

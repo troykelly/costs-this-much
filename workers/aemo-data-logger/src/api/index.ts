@@ -6,18 +6,20 @@
  *   - POST /refresh
  *   - GET /data
  *   - GET /.well-known/jwks.json
+ *   - GET /constants
  */
 import { createSigner, createVerifier } from "./jwtSupport";
 import { Env, KeyDefinition } from "./types";
+import { pricingConstants } from "./pricingConstantsData";
+
+export { AemoData } from "../AemoDataDurableObject";
+export { ApiAbuse } from "./ApiAbuseDurableObject";
 
 /**
  * Parses the base64-encoded spki PEM from your environment's "public" field,
  * which itself includes "-----BEGIN PUBLIC KEY-----" lines. We must decode from
  * base64 → ASCII text (with headers), then strip headers & footers, then decode
  * to binary for the WebCrypto importKey call.
- * 
- * This fixes the "double-encoded" scenario (because your .dev.vars stores a second
- * base64 of the entire ASCII file).
  */
 async function parsePublicKeyToJwkFromB64(b64Pem: string): Promise<{ n: string; e: string }> {
   // First, decode from base64 => ASCII text (which should include the PEM headers).
@@ -102,6 +104,9 @@ export default {
       return addCorsHeaders(request, env, r);
     } else if (url.pathname === "/data" && request.method === "GET") {
       const r = await this.handleDataRequest(request, env);
+      return addCorsHeaders(request, env, r);
+    } else if (url.pathname === "/constants" && request.method === "GET") {
+      const r = await this.handleConstantsRequest(request, env);
       return addCorsHeaders(request, env, r);
     }
 
@@ -269,6 +274,38 @@ export default {
       return new Response("Error: " + (err as Error).message, { status: 500 });
     }
   },
+
+  /**
+   * Retrieve pricing constants for the specified region. Must have a valid short-lived token.
+   */
+  async handleConstantsRequest(request: Request, env: Env): Promise<Response> {
+    try {
+      const authHeader = request.headers.get("authorization") || "";
+      const match = authHeader.match(/^Bearer (.+)$/);
+      if (!match) {
+        return new Response("Missing or invalid Authorization header", { status: 401 });
+      }
+      const accessToken = match[1];
+      const tokenPayload = await verifyToken(accessToken, env, false);
+      if (!tokenPayload) {
+        return new Response("Invalid or expired access token", { status: 401 });
+      }
+
+      const url = new URL(request.url);
+      const region = url.searchParams.get("regionid");
+      if (!region || !pricingConstants[region]) {
+        return new Response("Missing or invalid region", { status: 400 });
+      }
+
+      const constants = pricingConstants[region];
+      return new Response(JSON.stringify(constants, null, 2), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    } catch (err) {
+      return new Response("Error: " + (err as Error).message, { status: 500 });
+    }
+  },
 };
 
 /**
@@ -398,7 +435,6 @@ function handleOptionsRequest(request: Request, env: Env): Response {
     resp.headers.set("Access-Control-Allow-Origin", origin);
   }
   resp.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  // You can adapt Allow-Headers as needed for your app
   resp.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
   resp.headers.set("Access-Control-Max-Age", "86400");
 
@@ -433,7 +469,3 @@ function parseAllowedOrigins(raw: string): string[] {
     return [];
   }
 }
-
-// Re-export DOs for Wrangler
-export { AemoData } from "../AemoDataDurableObject";
-export { ApiAbuse } from "./ApiAbuseDurableObject";
