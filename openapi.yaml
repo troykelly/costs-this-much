@@ -6,12 +6,12 @@ info:
     including JWT issuance, token refresh, data retrieval, JWKS access, and
     pricing constants for retail cost calculations.
 
-    Version 1.2.0 includes:
+    Version 1.2.1 includes:
     • Updated details on rate limiting (429 status).  
     • Enhanced pagination header information for /data responses.  
     • Comprehensive request/response payload definitions to align with the latest code.  
-    • New /constants endpoint returning pricing constants per region.
-  version: "1.2.0"
+    • Revised /constants endpoint, now requiring both provider and region to future-proof usage.
+  version: "1.2.1"
 
 servers:
   - url: "https://api.coststhismuch.au"
@@ -325,15 +325,21 @@ paths:
   /constants:
     get:
       operationId: getConstants
-      summary: Retrieves pricing constants for a given region.
+      summary: Retrieves pricing constants for a given provider and region.
       description: |
         Requires a valid short-lived Bearer token.  
-        Specify your target region via the "regionid" query parameter (e.g., NSW1, QLD1).  
-        Returns a list of constants used in retail price calculations.
+        Must supply both "provider" and "regionid" query parameters (e.g. ?provider=AEMO&regionid=NSW1).  
+        Returns a list of constants used in retail price calculations for that specific provider's region.
       parameters:
+        - name: provider
+          in: query
+          description: The provider (e.g., "AEMO", "OriginEnergy") whose constants are sought.
+          required: true
+          schema:
+            type: string
         - name: regionid
           in: query
-          description: The region ID to retrieve constants for (e.g. "NSW1").
+          description: The region ID to retrieve constants for (e.g., "NSW1", "QLD1").
           required: true
           schema:
             type: string
@@ -341,7 +347,7 @@ paths:
         - bearerAuth: []
       responses:
         '200':
-          description: An array of pricing constants for the specified region.
+          description: An array of pricing constants for the specified provider and region.
           content:
             application/json:
               schema:
@@ -362,7 +368,7 @@ paths:
                   calendar: []
                   hour: []
         '400':
-          description: Missing or invalid region.
+          description: Missing or invalid provider or region.
         '401':
           description: Missing or invalid bearer token.
         '429':
@@ -566,7 +572,7 @@ components:
           type:
             - number
             - "null"
-          description: Percentage rate (e.g. 10 => 10%). If null, the cost is rate-based.
+          description: Percentage rate (e.g. 10 => 10%). If null, the cost is flat-based.
         type:
           type: string
           description: "Indicates how the cost is applied, e.g. 'flat' or 'kWh'."

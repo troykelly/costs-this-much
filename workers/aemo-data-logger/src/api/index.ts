@@ -6,7 +6,7 @@
  *   - POST /refresh
  *   - GET /data
  *   - GET /.well-known/jwks.json
- *   - GET /constants
+ *   - GET /constants (requires "provider" and "regionid")
  */
 import { createSigner, createVerifier } from "./jwtSupport";
 import { Env, KeyDefinition } from "./types";
@@ -276,7 +276,7 @@ export default {
   },
 
   /**
-   * Retrieve pricing constants for the specified region. Must have a valid short-lived token.
+   * Retrieve pricing constants for the specified provider and region. Must have a valid short-lived token.
    */
   async handleConstantsRequest(request: Request, env: Env): Promise<Response> {
     try {
@@ -292,13 +292,22 @@ export default {
       }
 
       const url = new URL(request.url);
+      const provider = url.searchParams.get("provider");
       const region = url.searchParams.get("regionid");
-      if (!region || !pricingConstants[region]) {
-        return new Response("Missing or invalid region", { status: 400 });
+      if (!provider || !region) {
+        return new Response("Missing provider or regionid", { status: 400 });
       }
 
-      const constants = pricingConstants[region];
-      return new Response(JSON.stringify(constants, null, 2), {
+      const providerData = pricingConstants[provider];
+      if (!providerData) {
+        return new Response("Invalid provider", { status: 400 });
+      }
+      const regionData = providerData[region];
+      if (!regionData) {
+        return new Response("Invalid region for provider", { status: 400 });
+      }
+
+      return new Response(JSON.stringify(regionData, null, 2), {
         status: 200,
         headers: { "content-type": "application/json" }
       });

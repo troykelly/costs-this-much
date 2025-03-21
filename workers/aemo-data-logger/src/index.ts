@@ -10,7 +10,6 @@ import type {
   ExecutionContext,
   ScheduledController,
 } from '@cloudflare/workers-types';
-import { AemoData } from './AemoDataDurableObject';
 
 /** Environment for the Worker, referencing the DO and log level. */
 export interface Env {
@@ -29,9 +28,6 @@ export interface Env {
   /** Optional environment-based log level: "DEBUG", "INFO", "WARN", or "ERROR". */
   LOG_LEVEL?: string;
 }
-
-// Re-export the DO class for Wrangler’s build:
-export { AemoData } from './AemoDataDurableObject';
 
 const WORKER_INFO = `AEMO Data Logger Worker. 
 Runs on a CRON schedule, calls the DO’s /sync route to ingest intervals. 
