@@ -562,7 +562,7 @@ export class AemoData implements DurableObject {
     offset: number
   ): Response {
     try {
-      // Count
+      // Pull all columns so the user sees the full table data:
       let countSql = `
         SELECT COUNT(*) as total_count
         FROM market_interval_data
@@ -583,7 +583,29 @@ export class AemoData implements DurableObject {
       // Data
       const orderDir = asc ? "ASC" : "DESC";
       let query = `
-        SELECT settlement_ts, regionid, region, market_name, energy_price
+        SELECT settlement_ts,
+               regionid,
+               region,
+               market_name,
+               energy_price,
+               price_status,
+               apc_flag,
+               market_suspended_flag,
+               total_demand,
+               net_interchange,
+               scheduled_generation,
+               semischeduled_generation,
+               interconnector_flows,
+               raise_reg_price,
+               lower_reg_price,
+               raise_1sec_price,
+               raise_6sec_price,
+               raise_60sec_price,
+               raise_5min_price,
+               lower_1sec_price,
+               lower_6sec_price,
+               lower_60sec_price,
+               lower_5min_price
         FROM market_interval_data
         WHERE settlement_ts >= ? AND settlement_ts <= ?
       `;
@@ -595,13 +617,31 @@ export class AemoData implements DurableObject {
       query += ` ORDER BY settlement_ts ${orderDir} LIMIT ? OFFSET ?`;
       vals.push(limit, offset);
 
-      const rows = this.sql.exec<SimpleIntervalRow>(query, ...vals).toArray();
+      const rows = this.sql.exec<MarketIntervalRecord>(query, ...vals).toArray();
       const mapped = rows.map(r => ({
         settlement: r.settlement_ts ? new Date(r.settlement_ts).toISOString() : null,
         regionid: r.regionid,
         region: r.region,
         market_name: r.market_name,
-        energy_price: r.energy_price
+        rrp: r.energy_price,
+        price_status: r.price_status,
+        apcflag: r.apc_flag,
+        market_suspended_flag: r.market_suspended_flag,
+        totaldemand: r.total_demand,
+        netinterchange: r.net_interchange,
+        scheduledgeneration: r.scheduled_generation,
+        semischeduledgeneration: r.semischeduled_generation,
+        interconnector_flows: r.interconnector_flows,
+        raise_reg_price: r.raise_reg_price,
+        lower_reg_price: r.lower_reg_price,
+        raise_1sec_price: r.raise_1sec_price,
+        raise_6sec_price: r.raise_6sec_price,
+        raise_60sec_price: r.raise_60sec_price,
+        raise_5min_price: r.raise_5min_price,
+        lower_1sec_price: r.lower_1sec_price,
+        lower_6sec_price: r.lower_6sec_price,
+        lower_60sec_price: r.lower_60sec_price,
+        lower_5min_price: r.lower_5min_price
       }));
 
       // Pagination
@@ -638,7 +678,6 @@ export class AemoData implements DurableObject {
     offset: number
   ): Response {
     try {
-      // Count how many distinct "latest" entries
       let countSql = `
         SELECT COUNT(*) as total_count FROM (
           SELECT regionid, settlement_ts
@@ -666,7 +705,29 @@ export class AemoData implements DurableObject {
 
       // Data
       let query = `
-        SELECT t.settlement_ts, t.regionid, t.region, t.market_name, t.energy_price
+        SELECT t.settlement_ts,
+               t.regionid,
+               t.region,
+               t.market_name,
+               t.energy_price,
+               t.price_status,
+               t.apc_flag,
+               t.market_suspended_flag,
+               t.total_demand,
+               t.net_interchange,
+               t.scheduled_generation,
+               t.semischeduled_generation,
+               t.interconnector_flows,
+               t.raise_reg_price,
+               t.lower_reg_price,
+               t.raise_1sec_price,
+               t.raise_6sec_price,
+               t.raise_60sec_price,
+               t.raise_5min_price,
+               t.lower_1sec_price,
+               t.lower_6sec_price,
+               t.lower_60sec_price,
+               t.lower_5min_price
         FROM market_interval_data t
         JOIN (
           SELECT regionid AS sub_region, MAX(settlement_ts) AS sub_max
@@ -682,13 +743,31 @@ export class AemoData implements DurableObject {
       query += ` ORDER BY t.settlement_ts DESC LIMIT ? OFFSET ?`;
       vals.push(limit.toString(), offset.toString());
 
-      const rows = this.sql.exec<SimpleIntervalRow>(query, ...vals).toArray();
+      const rows = this.sql.exec<MarketIntervalRecord>(query, ...vals).toArray();
       const mapped = rows.map(r => ({
         settlement: r.settlement_ts ? new Date(r.settlement_ts).toISOString() : null,
         regionid: r.regionid,
         region: r.region,
         market_name: r.market_name,
-        energy_price: r.energy_price
+        rrp: r.energy_price,
+        price_status: r.price_status,
+        apcflag: r.apc_flag,
+        market_suspended_flag: r.market_suspended_flag,
+        totaldemand: r.total_demand,
+        netinterchange: r.net_interchange,
+        scheduledgeneration: r.scheduled_generation,
+        semischeduledgeneration: r.semischeduled_generation,
+        interconnector_flows: r.interconnector_flows,
+        raise_reg_price: r.raise_reg_price,
+        lower_reg_price: r.lower_reg_price,
+        raise_1sec_price: r.raise_1sec_price,
+        raise_6sec_price: r.raise_6sec_price,
+        raise_60sec_price: r.raise_60sec_price,
+        raise_5min_price: r.raise_5min_price,
+        lower_1sec_price: r.lower_1sec_price,
+        lower_6sec_price: r.lower_6sec_price,
+        lower_60sec_price: r.lower_60sec_price,
+        lower_5min_price: r.lower_5min_price
       }));
 
       const resp = new Response(JSON.stringify(mapped), {
@@ -739,12 +818,4 @@ export class AemoData implements DurableObject {
       console.log(`[${level}] ${msg}`);
     }
   }
-}
-
-interface SimpleIntervalRow {
-  settlement_ts: number;
-  regionid: string;
-  region: string | null;
-  market_name: string;
-  energy_price: number | null;
 }

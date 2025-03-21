@@ -8,8 +8,10 @@ info:
 
     This version includes:  
     - Enhanced debug logging in the data DO.  
-    - Additional details on paging and query parameters for /data.
-  version: "1.0.4"
+    - Additional details on paging and query parameters for /data.  
+    - Updated columns and documentation to reflect new FCAS fields and
+      additional columns in the data table.
+  version: "1.0.5"
 
 servers:
   - url: "https://api.coststhismuch.au"
@@ -140,7 +142,7 @@ paths:
   /data:
     get:
       operationId: getData
-      summary: Retrieves 5-minute intervals from the shared DO (SQL).
+      summary: Retrieves intervals from the shared DO (SQL) including FCAS data.
       description: |
         Requires a valid short-lived Bearer token.  
         If no query parameters, returns the most recent results descending.  
@@ -221,22 +223,46 @@ paths:
                   regionid: "QLD1"
                   region: "QLD1"
                   rrp: 56.78
+                  price_status: "FIRM"
+                  apcflag: 0
+                  market_suspended_flag: 0
                   totaldemand: 5000
-                  periodtype: "ENERGY"
                   netinterchange: 120.5
                   scheduledgeneration: 3400
                   semischeduledgeneration: 1200
-                  apcflag: 0
+                  interconnector_flows: "[{\"name\":\"nsw-qld\",\"value\":123.4}]"
+                  raise_reg_price: 5.0
+                  lower_reg_price: 5.49
+                  raise_1sec_price: 0.3
+                  raise_6sec_price: 8.68
+                  raise_60sec_price: 0.39
+                  raise_5min_price: 0.37
+                  lower_1sec_price: 0.0
+                  lower_6sec_price: 0.1
+                  lower_60sec_price: 0.38
+                  lower_5min_price: 0.1
                 - settlement: "2025-03-20T12:39:56Z"
                   regionid: "QLD1"
                   region: "QLD1"
                   rrp: 60.12
+                  price_status: "FIRM"
+                  apcflag: 0
+                  market_suspended_flag: 0
                   totaldemand: 5050
-                  periodtype: "ENERGY"
                   netinterchange: 115.7
                   scheduledgeneration: 3410
                   semischeduledgeneration: 1190
-                  apcflag: 0
+                  interconnector_flows: "[{\"name\":\"nsw-qld\",\"value\":126.7}]"
+                  raise_reg_price: 5.0
+                  lower_reg_price: 5.49
+                  raise_1sec_price: 0.3
+                  raise_6sec_price: 8.68
+                  raise_60sec_price: 0.39
+                  raise_5min_price: 0.37
+                  lower_1sec_price: 0.0
+                  lower_6sec_price: 0.1
+                  lower_60sec_price: 0.38
+                  lower_5min_price: 0.1
         '401':
           description: The bearer token is missing or invalid.
         '400':
@@ -329,17 +355,27 @@ components:
           type:
             - number
             - "null"
-          description: Regional reference price for the interval.
+          description: Regional reference price (energy price).
+        price_status:
+          type:
+            - string
+            - "null"
+          description: e.g. "FIRM".
+        apcflag:
+          type:
+            - number
+            - "null"
+          description: APC flag if any (0 = none).
+        market_suspended_flag:
+          type:
+            - number
+            - "null"
+          description: Indicates if the market is suspended.
         totaldemand:
           type:
             - number
             - "null"
           description: Total demand (MW).
-        periodtype:
-          type:
-            - string
-            - "null"
-          description: e.g. "ENERGY".
         netinterchange:
           type:
             - number
@@ -355,8 +391,62 @@ components:
             - number
             - "null"
           description: Semi-scheduled generation (MW).
-        apcflag:
+        interconnector_flows:
+          type:
+            - string
+            - "null"
+          description: JSON string of any interconnector flow objects.
+        raise_reg_price:
           type:
             - number
             - "null"
-          description: APC flag, if applicable.
+          description: FCAS raise regulation price.
+        lower_reg_price:
+          type:
+            - number
+            - "null"
+          description: FCAS lower regulation price.
+        raise_1sec_price:
+          type:
+            - number
+            - "null"
+          description: FCAS raise 1 second price.
+        raise_6sec_price:
+          type:
+            - number
+            - "null"
+          description: FCAS raise 6 second price.
+        raise_60sec_price:
+          type:
+            - number
+            - "null"
+          description: FCAS raise 60 second price.
+        raise_5min_price:
+          type:
+            - number
+            - "null"
+          description: FCAS raise 5 minute price.
+        lower_1sec_price:
+          type:
+            - number
+            - "null"
+          description: FCAS lower 1 second price.
+        lower_6sec_price:
+          type:
+            - number
+            - "null"
+          description: FCAS lower 6 second price.
+        lower_60sec_price:
+          type:
+            - number
+            - "null"
+          description: FCAS lower 60 second price.
+        lower_5min_price:
+          type:
+            - number
+            - "null"
+          description: FCAS lower 5 minute price.
+      required:
+        - settlement
+        - regionid
+        - rrp
